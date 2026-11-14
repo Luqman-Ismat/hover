@@ -5,19 +5,24 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import * as sea from 'node:sea';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { ClientState } from './state.js';
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// Packaged builds (Hover.exe / Hover for Mac) carry the web app inside the executable.
+const PACKAGED = !!sea.isSea?.();
+const ROOT = PACKAGED ? '' : path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const WEB = path.join(ROOT, 'web');
 const PORT = Number(process.env.HOVER_PORT || 7373);
 const HOME = process.env.HOVER_HOME || path.join(os.homedir(), '.hover');
 const DEVICES = path.join(HOME, 'devices.json');
-const NTFY = process.env.HOVER_NTFY_TOPIC; // optional: push on queue pop via ntfy.sh
 const COOKIE = 'hover_device';
 
 fs.mkdirSync(HOME, { recursive: true });
+// Optional settings without env vars: ~/.hover/config.json  { "ntfyTopic": "hover-…" }
+const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')); } catch { return {}; } })();
+const NTFY = process.env.HOVER_NTFY_TOPIC || CONFIG.ntfyTopic; // optional: phone pushes via ntfy.sh
 
 // ---- paired devices -------------------------------------------------------
 const loadDevices = () => { try { return JSON.parse(fs.readFileSync(DEVICES, 'utf8')); } catch { return []; } };
@@ -43,13 +48,27 @@ function authed(req) {
 const client = new ClientState();
 client.start();
 
-client.on('readyCheck', () => {
+// Phone pushes (optional, via ntfy) for the moments you might be away from the screen.
+function push(title, body, tags, priority = 'high') {
   if (!NTFY) return;
   fetch(`https://ntfy.sh/${encodeURIComponent(NTFY)}`, {
     method: 'POST',
-    headers: { Title: 'Match found', Priority: 'urgent', Tags: 'crossed_swords', Click: `http://${lanAddress()}:${PORT}` },
-    body: 'Accept it from Hover.',
+    headers: { Title: title, Priority: priority, Tags: tags, Click: `http://${lanAddress()}:${PORT}` },
+    body,
   }).catch(() => {});
+}
+client.on('readyCheck', () => push('Match found', 'Accept it from Hover.', 'crossed_swords', 'urgent'));
+client.on('pickTimeout', (type) => {
+  log(`Your ${type} timer is almost out`);
+  push(type === 'ban' ? 'Ban now' : 'Pick now', '10 seconds left. If the timer runs out you’ll be removed from champ select.', 'hourglass', 'urgent');
+});
+client.on('gameLoaded', () => {
+  log('Game loaded: the game timer has started');
+  push('Game loaded', 'The game timer has started. Get to your computer.', 'video_game');
+});
+client.on('afkRisk', () => {
+  log('Nothing bought yet: AFK warning likely soon');
+  push('AFK warning coming', 'You haven’t bought anything yet. Get to your computer.', 'warning', 'urgent');
 });
 
 let lcuWasUp = null;
@@ -167,11 +186,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method !== 'GET') return send(res, 405, '');
-    const file = STATIC[p] || path.join(WEB, p === '/' ? 'index.html' : path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
-    if (!STATIC[p] && !file.startsWith(WEB)) return send(res, 403, '');
-    const body = await fs.promises.readFile(file).catch(() => null);
+    const rel = p === '/' ? 'index.html' : p.slice(1);
+    let body;
+    if (PACKAGED) {
+      // Only names that were embedded at build time can be served.
+      try { body = Buffer.from(sea.getAsset(rel)); } catch { body = null; }
+    } else {
+      const file = STATIC[p] || path.join(WEB, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
+      if (!STATIC[p] && !file.startsWith(WEB)) return send(res, 403, '');
+      body = await fs.promises.readFile(file).catch(() => null);
+    }
     if (!body) return send(res, 404, 'Not found');
-    return send(res, 200, body, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    return send(res, 200, body, { 'Content-Type': TYPES[path.extname(rel)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
   } catch (err) {
     return json(res, 500, { error: err.message });
   }
@@ -234,6 +260,14 @@ function log(line) {
   const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   console.log(`  ${t}  ${line}`);
 }
+
+server.on('error', (err) => {
+  console.error(err.code === 'EADDRINUSE'
+    ? `\n  Hover is already running (port ${PORT} is in use). Close the other Hover window and try again.\n`
+    : `\n  Hover couldn’t start: ${err.message}\n`);
+  // Keep a double-clicked window open long enough to read the message.
+  setTimeout(() => process.exit(1), PACKAGED ? 60_000 : 0);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   const url = `http://${lanAddress()}:${PORT}`;

@@ -11,13 +11,13 @@ import WebSocket from 'ws';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'hover-e2e-'));
 const PORT = 7399;
-const env = { ...process.env, HOVER_PORT: String(PORT), MOCK_PORT: '52499', MOCK_SPEED: '5', HOVER_HOME: tmp, HOVER_LOCKFILE: path.join(tmp, 'lockfile') };
+const env = { ...process.env, HOVER_PORT: String(PORT), MOCK_PORT: '52499', MOCK_LIVE_PORT: '52498', HOVER_LIVE_URL: 'http://127.0.0.1:52498', MOCK_SPEED: '5', HOVER_HOME: tmp, HOVER_LOCKFILE: path.join(tmp, 'lockfile') };
 const base = `http://127.0.0.1:${PORT}`;
 
 const mock = spawn(process.execPath, ['mock/lcu.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'] });
 const bridge = spawn(process.execPath, ['bridge/index.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'] });
 const done = (code) => { mock.kill(); bridge.kill(); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(code); };
-const timeout = setTimeout(() => { console.error('✗ timed out'); done(1); }, 120_000);
+const timeout = setTimeout(() => { console.error('✗ timed out'); done(1); }, 300_000);
 
 let out = '';
 const code = await new Promise((resolve) => bridge.stdout.on('data', (b) => { out += b; const m = out.match(/Pairing code\s+(\d{3}) (\d{3})/); if (m) resolve(m[1] + m[2]); }));
@@ -56,7 +56,13 @@ try {
     const check = () => { if (state && pred(state)) { clearTimeout(t); waiters.splice(waiters.indexOf(check), 1); resolve(state); } };
     waiters.push(check); check();
   });
-  const cmd = (type, extra = {}) => new Promise((resolve) => { const id = ++seq; pending.set(id, resolve); ws.send(JSON.stringify({ id, type, ...extra })); });
+  const debug = !!process.env.E2E_DEBUG;
+  const cmd = (type, extra = {}) => new Promise((resolve) => {
+    const id = ++seq;
+    if (debug) console.log(`  → ${type} ${JSON.stringify(extra)}`);
+    pending.set(id, (r) => { if (debug) console.log(`  ← ${type} ${r.ok ? "ok" : r.error}`); resolve(r); });
+    ws.send(JSON.stringify({ ...extra, id, type }));
+  });
 
   await until((s) => s.lcu && s.phase === 'Lobby' && s.queueName, 'lobby');
   await new Promise((r) => setTimeout(r, 300));
@@ -155,6 +161,25 @@ try {
   assert.ok(state.session.myTeam.some((m) => m.name === online[0].name), 'party member on my team');
   ok('champ select: assigned my primary role, party member on my team');
   const mine = () => state.session.actions.flat().filter((a) => a.actor === state.session.me);
+  // Position swaps during planning: cell 1 always declines, others accept.
+  const sw = (kind, cell) => state.session.swaps[kind].find((x) => x.cellId === cell);
+  const ally = state.session.myTeam.find((m) => m.cellId === 0);
+  const myPos = me().assignedPosition, theirPos = ally.assignedPosition;
+  assert.equal(sw('position', 0).state, 'AVAILABLE');
+  assert.equal((await cmd('swap', { kind: 'position', swapId: 9999, action: 'request' })).ok, false);
+  assert.equal((await cmd('swap', { kind: 'rawEndpoint', swapId: sw('position', 0).id, action: 'request' })).ok, false);
+  assert.ok((await cmd('swap', { kind: 'position', swapId: sw('position', 1).id, action: 'request' })).ok);
+  await until(() => sw('position', 1).state === 'DECLINED', 'position swap declined');
+  assert.ok((await cmd('swap', { kind: 'position', swapId: sw('position', 0).id, action: 'request' })).ok);
+  await until(() => sw('position', 0).state === 'SENT', 'position swap sent');
+  await until(() => me().assignedPosition === theirPos, 'position swapped');
+  assert.equal(state.session.myTeam.find((m) => m.cellId === 0).assignedPosition, myPos);
+  ok(`swaps: position swap declined by one teammate, accepted by another (${myPos} -> ${theirPos})`);
+  // Swap back so the rest of the run is as before.
+  await until(() => sw('position', 0).state === 'AVAILABLE', 'position swap available again');
+  assert.ok((await cmd('swap', { kind: 'position', swapId: sw('position', 0).id, action: 'request' })).ok);
+  await until(() => me().assignedPosition === myPos, 'position swapped back');
+
   const want = state.pickable[0];
   assert.ok((await cmd('hover', { championId: want })).ok);
   await until(() => me().championPickIntent === want, 'pick intent');
@@ -184,8 +209,21 @@ try {
   await until(() => me().spell1Id === 12 && me().spell2Id === 4, 'spells');
   ok('spells set to Teleport + Flash');
 
+  // A teammate offers a champion trade during finalization.
+  await until(() => state.session?.swaps?.trade.some((x) => x.state === 'RECEIVED'), 'incoming trade');
+  const offer = state.session.swaps.trade.find((x) => x.state === 'RECEIVED');
+  const theirChamp = state.session.myTeam.find((m) => m.cellId === offer.cellId).championId;
+  assert.ok((await cmd('swap', { kind: 'trade', swapId: offer.id, action: 'accept' })).ok);
+  await until(() => me().championId === theirChamp, 'traded');
+  ok(`swaps: accepted a teammate's trade for ${data.champions.find((c) => c.id === theirChamp).name}`);
+
   await until((s) => s.phase === 'InProgress', 'in game');
   ok('champ select finished -> in game');
+  await until((s) => s.live && !s.live.loaded, 'loading screen');
+  await until((s) => s.live?.loaded && s.live.gameTime > 0, 'game loaded');
+  ok(`live game: loaded and timer running (${state.live.gameTime}s)`);
+  await until((s) => s.live?.afkRisk, 'afk risk');
+  ok(`live game: AFK risk flagged at ${state.live.gameTime}s with nothing bought`);
 
   // ARAM: bench + reroll
   await until((s) => s.phase === 'Lobby', 'back to lobby');

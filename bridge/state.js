@@ -1,6 +1,8 @@
 // Mirrors the slice of client state the phone needs, and maps phone intents
 // to LCU calls. The phone never sends raw endpoints: only the commands below.
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
+import https from 'node:https';
 import { LCU } from './lcu.js';
 
 const URI = {
@@ -13,6 +15,29 @@ const URI = {
   runePages: '/lol-perks/v1/pages',
   runeCurrent: '/lol-perks/v1/currentpage',
 };
+const swapList = (list) => (Array.isArray(list) ? list : []).map((x) => ({ id: x.id, cellId: x.cellId, state: x.state }));
+const SWAP_KINDS = { trade: ['trades', 'trades'], order: ['pickOrderSwaps', 'pick-order-swaps'], position: ['positionSwaps', 'position-swaps'] };
+const SWAP_ACTIONS = ['request', 'accept', 'decline', 'cancel'];
+const PICK_WARNING_MS = 10_000; // warn when this much of your pick/ban timer is left
+const AFK_AFTER_S = 75;         // in game: no items bought by now suggests you're away
+
+// League's in-game Live Client Data API (served by the game itself once it's running).
+const LIVE_URL = process.env.HOVER_LIVE_URL || 'https://127.0.0.1:2999';
+function liveData() {
+  return new Promise((resolve) => {
+    const url = new URL('/liveclientdata/allgamedata', LIVE_URL);
+    const lib = url.protocol === 'http:' ? http : https;
+    const req = lib.get(url, { rejectUnauthorized: false, timeout: 1500 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(null); } });
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(null));
+  });
+}
+
 const POSITION_PREFS = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY', 'FILL', 'UNSELECTED'];
 const stripTags = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 const BY_URI = Object.fromEntries(Object.entries(URI).map(([k, v]) => [v, k]));
@@ -45,7 +70,9 @@ export class ClientState extends EventEmitter {
       session: null, sessionAt: 0, queueName: null, gameMode: null,
       pickable: [], bannable: [],
       invites: null, runePages: null, runeCurrent: null,
+      live: null,
     };
+    this.#stopLive?.();
   }
 
   start() { this.lcu.start(); }
@@ -109,10 +136,13 @@ export class ClientState extends EventEmitter {
       this.s.phase = value || 'None';
       if (value === 'ChampSelect' && prev !== 'ChampSelect') this.#loadChampSelectExtras();
       if (value === 'ReadyCheck' && prev !== 'ReadyCheck') this.emit('readyCheck');
+      if (value === 'GameStart' || value === 'InProgress') this.#startLive();
+      else if (value !== 'Reconnect') this.#stopLive();
     }
     if (key === 'session') {
       this.s.sessionAt = Date.now();
       if (value) this.#refreshPools();
+      this.#armPickWarning();
     }
     if (key === 'lobby') {
       const q = value?.gameConfig?.queueId;
@@ -217,10 +247,14 @@ export class ClientState extends EventEmitter {
           left: sess.timer.isInfinite ? null : Math.max(0, sess.timer.adjustedTimeLeftInPhase - age),
           total: sess.timer.totalTimeInPhase,
         },
+        swaps: {
+          trade: swapList(sess.trades), order: swapList(sess.pickOrderSwaps), position: swapList(sess.positionSwaps),
+        },
         bench: sess.benchEnabled ? (sess.benchChampions || []).map((b) => b.championId) : null,
         rerolls: sess.allowRerolling ? sess.rerollsRemaining : null,
         spectating: !!sess.isSpectating,
       },
+      live: s.live,
       gameMode: s.gameMode,
       pickable: s.pickable,
       bannable: s.bannable,
@@ -231,6 +265,50 @@ export class ClientState extends EventEmitter {
     const sess = this.s.session;
     if (!sess) return [];
     return (sess.actions || []).flat().filter((a) => a.actorCellId === sess.localPlayerCellId && !a.completed);
+  }
+
+  // One heads-up per pick/ban, ten seconds before your timer runs out.
+  #armPickWarning() {
+    clearTimeout(this.pickWarn);
+    const sess = this.s.session;
+    if (!sess || sess.timer?.isInfinite) return;
+    const mine = (sess.actions || []).flat().find((a) => a.actorCellId === sess.localPlayerCellId && a.isInProgress && !a.completed);
+    if (!mine || this.warnedAction === mine.id) return;
+    const left = sess.timer?.adjustedTimeLeftInPhase ?? 0;
+    const fire = () => { this.warnedAction = mine.id; this.emit('pickTimeout', mine.type); };
+    if (left <= PICK_WARNING_MS) { if (left > 0) fire(); }
+    else this.pickWarn = setTimeout(fire, left - PICK_WARNING_MS);
+  }
+
+  // While a game runs, poll the game's own API: it answers once the game has loaded.
+  #startLive() {
+    if (this.liveTimer) return;
+    this.s.live = { loaded: false, gameTime: 0, afkRisk: false };
+    const tick = async () => {
+      const d = await liveData();
+      if (!this.liveTimer) return;
+      const t = d?.gameData?.gameTime;
+      if (typeof t === 'number' && t > 0) {
+        const me = d.activePlayer?.riotId || d.activePlayer?.summonerName;
+        const player = (d.allPlayers || []).find((p) => (p.riotId || p.summonerName) === me);
+        const bought = (player?.items || []).length > 0;
+        const afkRisk = t >= AFK_AFTER_S && !bought && !player?.isDead;
+        const prev = this.s.live;
+        this.s.live = { loaded: true, gameTime: Math.floor(t), afkRisk };
+        if (!prev.loaded) this.emit('gameLoaded');
+        if (afkRisk && !prev.afkRisk) this.emit('afkRisk');
+        this.#changed();
+      }
+      this.liveTimer = setTimeout(tick, 2000);
+    };
+    this.liveTimer = setTimeout(tick, 0);
+    this.#changed();
+  }
+
+  #stopLive() {
+    clearTimeout(this.liveTimer);
+    this.liveTimer = null;
+    if (this.s?.live) this.s.live = null;
   }
 
   #page(id) {
@@ -364,6 +442,14 @@ export class ClientState extends EventEmitter {
         const spell1Id = int(msg.spell1Id), spell2Id = int(msg.spell2Id);
         if (!spell1Id || !spell2Id) throw new Error('Choose two spells');
         return this.#call('PATCH', '/lol-champ-select/v1/session/my-selection', { spell1Id, spell2Id });
+      }
+      case 'swap': {
+        const kind = SWAP_KINDS[msg.kind];
+        const id = int(msg.swapId);
+        if (!kind || !SWAP_ACTIONS.includes(msg.action) || !id) throw new Error('Unknown swap');
+        const entry = (this.s.session?.[kind[0]] || []).find((x) => x.id === id);
+        if (!entry) throw new Error('That swap isn’t available any more');
+        return this.#call('POST', `/lol-champ-select/v1/session/${kind[1]}/${id}/${msg.action}`);
       }
       case 'reroll': return this.#call('POST', '/lol-champ-select/v1/session/my-selection/reroll');
       case 'bench': {

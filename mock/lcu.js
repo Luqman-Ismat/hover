@@ -197,6 +197,45 @@ function startReadyCheck() {
   }, ms(0.25));
 }
 
+// ---- champ select swaps -----------------------------------------------------
+// Each ally can be asked for a position swap (planning), a pick-order swap (after bans,
+// before either of you picks) or a champion trade (once you've both locked in).
+// Cell 1 always says no, so declines are easy to test.
+const SWAP_BASE = { trade: 100, order: 200, position: 300 };
+const SWAP_PATH = { trades: 'trade', 'pick-order-swaps': 'order', 'position-swaps': 'position' };
+let SW = { trade: {}, order: {}, position: {} };
+const ALLIES = [0, 1, 3, 4];
+const picked = (cell) => S.session.actions.flat().some((a) => a.type === 'pick' && a.actorCellId === cell && a.completed);
+function swapLists() {
+  const s = S.session;
+  if (!s || S.queueId === 450) return { trades: [], pickOrderSwaps: [], positionSwaps: [] };
+  const phase = s.timer?.phase;
+  const bansDone = s.actions[0]?.every((a) => a.completed);
+  const avail = {
+    position: () => phase === 'PLANNING',
+    order: (c) => phase === 'BAN_PICK' && bansDone && !picked(c) && !picked(ME),
+    trade: (c) => (phase === 'BAN_PICK' || phase === 'FINALIZATION') && picked(c) && picked(ME),
+  };
+  const mk = (kind) => ALLIES.map((c) => ({ id: SWAP_BASE[kind] + c, cellId: c, state: SW[kind][c] || (avail[kind](c) ? 'AVAILABLE' : 'INVALID') }));
+  return { trades: mk('trade'), pickOrderSwaps: mk('order'), positionSwaps: mk('position') };
+}
+function doSwap(kind, cell) {
+  const s = S.session, me = member(ME), them = member(cell);
+  if (kind === 'position') [me.assignedPosition, them.assignedPosition] = [them.assignedPosition, me.assignedPosition];
+  if (kind === 'order') {
+    const mine = s.actions.flat().filter((a) => a.type === 'pick' && !a.completed && (a.actorCellId === ME || a.actorCellId === cell));
+    for (const a of mine) a.actorCellId = a.actorCellId === ME ? cell : ME;
+  }
+  if (kind === 'trade') {
+    [me.championId, them.championId] = [them.championId, me.championId];
+    for (const a of s.actions.flat()) {
+      if (a.type !== 'pick') continue;
+      if (a.actorCellId === ME) a.championId = me.championId;
+      if (a.actorCellId === cell) a.championId = them.championId;
+    }
+  }
+}
+
 // ---- champ select ----------------------------------------------------------
 const ORDER = [[0], [5, 6], [1, 2], [7, 8], [3, 4], [9]];
 const POS = ['top', 'jungle', 'middle', 'bottom', 'utility'];
@@ -222,6 +261,7 @@ function setTimer(phase, seconds) {
 
 function startChampSelect() {
   clearAll();
+  SW = { trade: {}, order: {}, position: {} };
   set('readyCheck', null); set('search', null);
   const aram = S.queueId === 450;
   // Your first role (if you picked one) is where you land; everyone else fills around you.
@@ -280,11 +320,11 @@ function benchSwap(cell, championId) {
 }
 
 function draftFlow() {
-  setTimer('PLANNING', 12);
+  setTimer('PLANNING', 30);
   touchSession();
   // Allies declare intents during planning.
   for (const c of [0, 1, 3, 4]) later(() => { member(c).championPickIntent = freeChamp(); touchSession(); }, between(1.5, 6));
-  later(() => runGroup(0), ms(12));
+  later(() => runGroup(0), ms(30));
 }
 
 function runGroup(gi) {
@@ -341,16 +381,35 @@ function complete(a, gi) {
 function finalize() {
   setTimer('FINALIZATION', S.queueId === 450 ? 6 : 15);
   touchSession();
+  // A teammate offers you a champion trade.
+  if (S.queueId !== 450) later(() => { if (picked(3) && picked(ME) && !SW.trade[3]) { SW.trade[3] = 'RECEIVED'; touchSession(); } }, ms(3));
   later(() => {
     setTimer('GAME_STARTING', 3);
     touchSession();
     later(() => {
       set('session', null);
       set('phase', 'GameStart');
-      later(() => set('phase', 'InProgress'), ms(2));
-      later(toLobby, ms(25));
+      later(() => { set('phase', 'InProgress'); LIVE.inGameAt = Date.now(); }, ms(2));
+      later(() => { LIVE.inGameAt = 0; toLobby(); }, ms(2 + LIVE.LOADING + LIVE.LENGTH));
     }, ms(3));
   }, ms(S.queueId === 450 ? 6 : 15));
+}
+
+// ---- live game (the game's own API on :2999) --------------------------------
+// The loading screen lasts LOADING seconds; then the game clock runs. You never buy
+// anything here, so the AFK estimate trips once the clock passes 75s.
+const LIVE = { LOADING: 8, LENGTH: 100, inGameAt: 0 };
+function liveView() {
+  if (S.phase !== 'InProgress' || !LIVE.inGameAt) return null;
+  const t = ((Date.now() - LIVE.inGameAt) / 1000) * SPEED - LIVE.LOADING;
+  if (t <= 0) return null;
+  const me = `${ME_INFO.gameName}#${ME_INFO.gameTag}`;
+  return {
+    activePlayer: { riotId: me, summonerName: ME_INFO.gameName, level: 1 },
+    allPlayers: [{ riotId: me, summonerName: ME_INFO.gameName, team: 'ORDER', level: 1, isDead: false, items: [] }],
+    events: { Events: [{ EventID: 0, EventName: 'GameStart', EventTime: 0 }] },
+    gameData: { gameMode: S.queueId === 450 ? 'ARAM' : 'CLASSIC', gameTime: t, mapName: 'Map11' },
+  };
 }
 
 // ---- http -------------------------------------------------------------------
@@ -371,7 +430,7 @@ function sessionView() {
   if (!S.session) return null;
   // Real client: timer counts down from the moment it was set.
   const t = S.session.timer;
-  return { ...S.session, timer: t && { ...t, adjustedTimeLeftInPhase: Math.max(0, S.phaseEnds - Date.now()), internalNowInEpochMs: Date.now() } };
+  return { ...S.session, ...swapLists(), timer: t && { ...t, adjustedTimeLeftInPhase: Math.max(0, S.phaseEnds - Date.now()), internalNowInEpochMs: Date.now() } };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -572,6 +631,33 @@ const server = http.createServer(async (req, res) => {
     touchSession();
     return reply(res, 204);
   }
+  const swapMatch = p.match(/^\/lol-champ-select\/v1\/session\/(trades|pick-order-swaps|position-swaps)\/(\d+)\/(request|accept|decline|cancel)$/);
+  if (m === 'POST' && swapMatch && S.session) {
+    const kind = SWAP_PATH[swapMatch[1]];
+    const cell = Number(swapMatch[2]) - SWAP_BASE[kind];
+    const entry = swapLists()[{ trade: 'trades', order: 'pickOrderSwaps', position: 'positionSwaps' }[kind]].find((x) => x.cellId === cell);
+    if (!entry) return err(res, 404, 'No such swap');
+    const action = swapMatch[3];
+    if (action === 'request') {
+      if (entry.state !== 'AVAILABLE') return err(res, 400, 'Swap not available');
+      SW[kind][cell] = 'SENT';
+      later(() => {
+        if (SW[kind][cell] !== 'SENT') return;
+        if (cell === 1) { SW[kind][cell] = 'DECLINED'; later(() => { delete SW[kind][cell]; touchSession(); }, ms(2)); }
+        else { doSwap(kind, cell); delete SW[kind][cell]; SW[kind][cell] = kind === 'trade' ? 'INVALID' : undefined; if (!SW[kind][cell]) delete SW[kind][cell]; }
+        touchSession();
+      }, between(2, 3));
+    } else if (action === 'cancel') {
+      if (entry.state !== 'SENT') return err(res, 400, 'Nothing to cancel');
+      delete SW[kind][cell];
+    } else {
+      if (entry.state !== 'RECEIVED') return err(res, 400, 'No request from them');
+      if (action === 'accept') { doSwap(kind, cell); SW[kind][cell] = kind === 'trade' ? 'INVALID' : undefined; if (!SW[kind][cell]) delete SW[kind][cell]; }
+      else delete SW[kind][cell];
+    }
+    touchSession();
+    return reply(res, 204);
+  }
   const benchMatch = p.match(/^\/lol-champ-select\/v1\/session\/bench\/swap\/(\d+)$/);
   if (m === 'POST' && benchMatch && me) {
     return benchSwap(ME, Number(benchMatch[1])) ? reply(res, 204) : err(res, 400, 'Not on the bench');
@@ -607,6 +693,14 @@ try { styles = JSON.parse(stylesRaw.body).styles; } catch { styles = []; }
 try { perkNames = new Map(JSON.parse(perksRaw.body).map((x) => [x.id, x.name])); } catch {}
 seedRunes();
 S.lobby = lobbyView();
+
+const LIVE_PORT = Number(process.env.MOCK_LIVE_PORT || 52438);
+http.createServer((req, res) => {
+  const v = liveView();
+  if (new URL(req.url, 'http://x').pathname !== '/liveclientdata/allgamedata' || !v) { res.writeHead(404); return res.end(); }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(v));
+}).listen(LIVE_PORT, '127.0.0.1');
 
 server.listen(PORT, '127.0.0.1', () => {
   fs.writeFileSync(LOCKFILE, `LeagueClient:${process.pid}:${PORT}:${PASS}:http`);

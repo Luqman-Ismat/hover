@@ -50,7 +50,7 @@ function send(type, payload = {}) {
     if (!ws || ws.readyState !== 1) return resolve({ ok: false, error: 'Not connected' });
     const id = ++seq;
     pending.set(id, resolve);
-    ws.send(JSON.stringify({ id, type, ...payload }));
+    ws.send(JSON.stringify({ ...payload, id, type })); // envelope fields win over payload
   }).then((r) => { if (!r.ok) toast(r.error); return r; });
 }
 
@@ -149,6 +149,7 @@ const Icon = {
   plus: html`<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   crown: html`<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path d="M3 15h14l1-9-4.5 3.5L10 4 6.5 9.5 2 6Z" fill="currentColor"/></svg>`,
   runes: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 2.5 16.5 10 10 17.5 3.5 10Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 6.5 13 10l-3 3.5L7 10Z" fill="currentColor"/></svg>`,
+  swap: html`<svg viewBox="0 0 20 20" width="12" height="12" aria-hidden="true"><path d="M4 7h11l-3-3M16 13H5l3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   edit: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M4 16l.8-3.2L13 4.6l2.4 2.4-8.2 8.2Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   trash: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 6h10M8 6V4h4v2M6.5 6l.7 10h5.6l.7-10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   back: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -734,6 +735,7 @@ function ChampSelect({ s }) {
   const [role, setRole] = useState('');
   const [optimistic, setOptimistic] = useState(null);
   const [spellSlot, setSpellSlot] = useState(0); // 0 closed, 1 = D, 2 = F
+  const [swapCell, setSwapCell] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const banning = current?.type === 'ban';
@@ -746,6 +748,15 @@ function ChampSelect({ s }) {
   const left = sess.timer?.left == null ? null : Math.max(0, sess.timer.left / 1000 - sinceState());
   const total = (sess.timer?.total || 1) / 1000;
   const urgent = left != null && left <= 5 && !!current;
+  // Ten seconds left on your own pick/ban: chime, buzz and say so, once per turn.
+  const warned = useRef(null);
+  const timingOut = left != null && left <= 10 && left > 0 && !!current;
+  useEffect(() => {
+    if (!timingOut || warned.current === current.id) return;
+    warned.current = current.id;
+    chime(); navigator.vibrate?.([200, 80, 200, 80, 200]);
+    toast(`10 seconds left to ${banning ? 'ban' : 'pick'}. If it runs out you’re removed from champ select.`);
+  }, [timingOut, current?.id]);
 
   const hover = async (id) => {
     if (busy) return;
@@ -783,7 +794,7 @@ function ChampSelect({ s }) {
       </header>
       <div class=${cx('bar', current ? '' : !d.activeCells.size ? 'idle' : d.allyActive ? 'ally' : 'enemy')}><i style=${{ transform: `scaleX(${left == null ? 1 : Math.min(1, left / total)})` }} /></div>
 
-      <${Teams} d=${d} />
+      <${Teams} d=${d} onAlly=${(m) => setSwapCell(m.cellId)} />
       <${Bans} sess=${sess} />
 
       <${MeCard} d=${d} selected=${selected} banning=${banning} onSpell=${setSpellSlot} />
@@ -821,6 +832,8 @@ function ChampSelect({ s }) {
       <footer class="dock">${dock}</footer>
 
       ${spellSlot > 0 && html`<${SpellSheet} slot=${spellSlot} me=${me} mode=${s.gameMode || (d.aram ? 'ARAM' : 'CLASSIC')} onClose=${() => setSpellSlot(0)} />`}
+      ${swapCell != null && html`<${SwapSheet} d=${d} cell=${swapCell} onClose=${() => setSwapCell(null)} />`}
+      <${SwapBanner} d=${d} />
     </main>`;
 }
 
@@ -854,22 +867,33 @@ function MeCard({ d, selected, banning, onSpell }) {
     </section>`;
 }
 
-function Teams({ d }) {
+// Swaps with one teammate, by kind: { trade, order, position } -> entry or undefined.
+const swapsWith = (sess, cell) => Object.fromEntries(['trade', 'order', 'position'].map((k) => [k, sess.swaps?.[k]?.find((x) => x.cellId === cell)]));
+const canSwap = (e) => e && (e.state === 'AVAILABLE' || e.state === 'SENT');
+
+function Teams({ d, onAlly }) {
   const { sess, activeCells } = d;
   const ally = (m) => {
     const id = m.championId || m.championPickIntent;
     const intent = !m.championId && id;
+    const mine = m.cellId === sess.me;
+    const sw = mine ? {} : swapsWith(sess, m.cellId);
+    const any = Object.values(sw).some(canSwap);
+    const sent = Object.values(sw).some((e) => e?.state === 'SENT');
     return html`
-      <li class=${cx('slot ally', m.cellId === sess.me && 'me', activeCells.has(m.cellId) && 'active', intent && 'intent', m.championId && 'filled')} key=${m.cellId}>
-        <span class="slot-face">
+      <li class=${cx('slot ally', mine && 'me', activeCells.has(m.cellId) && 'active', intent && 'intent', m.championId && 'filled')} key=${m.cellId}>
+        <button class="slot-face" disabled=${!any} onClick=${() => onAlly(m)} aria-label=${any ? `Swap with ${POSITIONS[m.assignedPosition] || m.name || 'teammate'}` : undefined}>
           ${id > 0 ? html`<img src=${art(id, 'tile')} alt=${champName(id)} key=${id} />` : html`<span class="slot-pos">${(POSITIONS[m.assignedPosition] || '').slice(0, 3)}</span>`}
-        </span>
-        <span class="slot-label">${m.cellId === sess.me ? 'You' : POSITIONS[m.assignedPosition] || m.name || ''}</span>
+          ${any && html`<i class=${cx('swap-badge', sent && 'sent')} aria-hidden="true">${Icon.swap}</i>`}
+        </button>
+        <span class="slot-label">${mine ? 'You' : POSITIONS[m.assignedPosition] || m.name || ''}</span>
       </li>`;
   };
   const enemy = (m) => html`
-    <li class=${cx('slot enemy', activeCells.has(m.cellId) && 'active')} key=${m.cellId}>
-      <span class="slot-face">${m.championId > 0 && html`<img src=${champIcon(m.championId)} alt=${champName(m.championId)} />`}</span>
+    <li class=${cx('slot enemy', activeCells.has(m.cellId) && 'active', m.championId > 0 && 'filled')} key=${m.cellId}>
+      <span class="slot-face">
+        ${m.championId > 0 ? html`<img src=${art(m.championId, 'tile')} alt=${champName(m.championId)} key=${m.championId} />` : html`<span class="slot-pos">${m.cellId - 4}</span>`}
+      </span>
     </li>`;
   return html`
     <section class="teams">
@@ -877,6 +901,76 @@ function Teams({ d }) {
       <div class="vs"><span>Enemy</span></div>
       <ul class="team theirs" aria-label="Enemy team">${sess.theirTeam.map(enemy)}</ul>
     </section>`;
+}
+
+// What swapping with this teammate would do, and the request/cancel buttons.
+function SwapSheet({ d, cell, onClose }) {
+  const { sess, me } = d;
+  const them = sess.myTeam.find((m) => m.cellId === cell) || {};
+  const who = them.name || POSITIONS[them.assignedPosition] || 'Teammate';
+  const sw = swapsWith(sess, cell);
+  const go = (kind, action) => { send('swap', { kind, swapId: sw[kind].id, action }); if (action === 'request') onClose(); };
+  const myPickIdx = (c) => sess.actions.flat().filter((a) => a.type === 'pick').findIndex((a) => a.actor === c) + 1;
+  const rows = [
+    sw.position && { kind: 'position', title: 'Swap positions', what: `You go ${POSITIONS[them.assignedPosition] || '?'}, they go ${POSITIONS[me.assignedPosition] || '?'}` },
+    sw.order && { kind: 'order', title: 'Swap pick order', what: `You pick ${myPickIdx(cell) || '?'}${['st', 'nd', 'rd'][myPickIdx(cell) - 1] || 'th'}, they pick ${myPickIdx(me.cellId) || '?'}${['st', 'nd', 'rd'][myPickIdx(me.cellId) - 1] || 'th'}` },
+    sw.trade && { kind: 'trade', title: 'Trade champions', what: `You get ${champName(them.championId) || '?'}, they get ${champName(me.championId) || '?'}` },
+  ].filter((r) => r && canSwap(sw[r.kind]));
+  return html`
+    <${Sheet} title=${`Swap with ${who}`} onClose=${onClose}>
+      ${!rows.length ? html`<p class="sheet-note">No swaps available with ${who} right now.</p>` : html`
+        <ul class="swap-list">
+          ${rows.map((r) => {
+            const sent = sw[r.kind].state === 'SENT';
+            return html`
+              <li key=${r.kind} class="swap-row">
+                <span class="swap-text"><span class="swap-title">${r.title}</span><span class="swap-what">${r.what}</span></span>
+                ${sent ? html`<button class="btn quiet sm" onClick=${() => go(r.kind, 'cancel')}>Cancel</button>`
+                  : html`<button class="btn hex sm" onClick=${() => go(r.kind, 'request')}>Ask</button>`}
+              </li>`;
+          })}
+        </ul>`}
+    </${Sheet}>`;
+}
+
+// Incoming requests (accept/decline), your pending ones, and a note when one is turned down.
+function SwapBanner({ d }) {
+  const { sess, me } = d;
+  const seen = useRef(new Map());
+  const all = ['trade', 'order', 'position'].flatMap((k) => (sess.swaps?.[k] || []).map((e) => ({ ...e, kind: k })));
+  useEffect(() => {
+    for (const e of all) {
+      const key = `${e.kind}:${e.id}`, was = seen.current.get(key);
+      if (e.state === 'DECLINED' && was === 'SENT') toast(`${nameOf(e.cellId)} said no to the swap`);
+      if (e.state === 'RECEIVED' && was !== 'RECEIVED') { chime(); navigator.vibrate?.([120, 60, 120]); }
+      if (was === 'SENT' && (e.state === 'AVAILABLE' || e.state === 'INVALID')) toast('Swap done');
+      seen.current.set(key, e.state);
+    }
+  });
+  const nameOf = (cell) => { const m = sess.myTeam.find((x) => x.cellId === cell); return m?.name || POSITIONS[m?.assignedPosition] || 'A teammate'; };
+  const incoming = all.find((e) => e.state === 'RECEIVED');
+  const outgoing = all.find((e) => e.state === 'SENT');
+  if (incoming) {
+    const them = sess.myTeam.find((m) => m.cellId === incoming.cellId) || {};
+    const what = incoming.kind === 'trade' ? `You get ${champName(them.championId)}, they get ${champName(me.championId)}`
+      : incoming.kind === 'position' ? `You go ${POSITIONS[them.assignedPosition]}, they go ${POSITIONS[me.assignedPosition]}`
+      : 'You swap places in the pick order';
+    const label = { trade: 'wants to trade champions', order: 'wants to swap pick order', position: 'wants to swap positions' }[incoming.kind];
+    return html`
+      <div class="swap-banner" role="alert" key=${incoming.kind + incoming.id}>
+        <p class="invite-text"><span class="eyebrow">Swap request</span><span><b>${nameOf(incoming.cellId)}</b> ${label}</span><span class="swap-what">${what}</span></p>
+        <div class="invite-actions">
+          <button class="btn quiet sm" onClick=${() => send('swap', { kind: incoming.kind, swapId: incoming.id, action: 'decline' })}>Decline</button>
+          <button class="btn hex sm" onClick=${() => send('swap', { kind: incoming.kind, swapId: incoming.id, action: 'accept' })}>Accept</button>
+        </div>
+      </div>`;
+  }
+  if (outgoing) return html`
+    <div class="swap-banner sent" role="status">
+      <p class="invite-text"><span class="eyebrow">Swap requested</span><span>Waiting for <b>${nameOf(outgoing.cellId)}</b>…</span></p>
+      <div class="invite-actions"><button class="btn quiet sm" onClick=${() => send('swap', { kind: outgoing.kind, swapId: outgoing.id, action: 'cancel' })}>Cancel</button></div>
+    </div>`;
+  return null;
 }
 
 function Bans({ sess }) {
@@ -934,17 +1028,36 @@ function SpellSheet({ slot, me, mode, onClose }) {
 // Loading / in game: your champion, full screen
 // ---------------------------------------------------------------------------
 function Hero({ eyebrow, body }) {
+  useTicker(1000);
   const id = lastPick;
   const title = useTitle(id);
+  const live = store.state?.live;
+  const loaded = !!live?.loaded;
+  const afk = !!live?.afkRisk;
+  // Buzz once when the game loads, and again if it looks like you're not at your computer.
+  const was = useRef({ loaded, afk });
+  useEffect(() => {
+    if (loaded && !was.current.loaded) { chime(); navigator.vibrate?.([250, 100, 250]); }
+    if (afk && !was.current.afk) { chime(); navigator.vibrate?.([400, 120, 400, 120, 400]); }
+    was.current = { loaded, afk };
+  }, [loaded, afk]);
+  const gameClock = loaded ? clock(live.gameTime + sinceState()) : null;
+  const chip = !live ? eyebrow : loaded ? 'Game running' : 'Loading screen';
   return html`
-    <main class="screen hero">
-      <header class="top-row"><${Logo} /><span class="chip"><i class="dot live" />${eyebrow}</span></header>
+    <main class=${cx('screen hero', afk && 'afk')}>
+      <header class="top-row"><${Logo} /><span class="chip"><i class=${cx('dot', afk ? 'warn' : 'live')} />${chip}</span></header>
       <div class="hero-foot">
         ${id > 0 ? html`
           <p class="eyebrow">You’re playing</p>
           <h1 class="giant">${champName(id)}</h1>
           ${title && html`<p class="hero-title">${title}</p>`}` : html`<h1 class="mega">${eyebrow}</h1>`}
-        <p class="sub">${body}</p>
+        ${live && html`
+          <div class=${cx('game-status', loaded && 'loaded', afk && 'afk')} role="status" aria-live="assertive">
+            ${!loaded ? html`<span class="pulse" /><span>Loading in. Hover will tell you the moment the game starts.</span>`
+              : afk ? html`<span class="gs-clock">${gameClock}</span><span><b>AFK warning coming.</b> You haven’t bought anything yet. Get to your computer.</span>`
+              : html`<span class="gs-clock">${gameClock}</span><span><b>Game loaded.</b> The timer’s running. Get to your computer.</span>`}
+          </div>`}
+        ${!live && html`<p class="sub">${body}</p>`}
       </div>
     </main>`;
 }
