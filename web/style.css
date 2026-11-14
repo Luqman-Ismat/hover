@@ -311,14 +311,8 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .queue-opt.on .queue-blurb { color: var(--muted); }
 
 /* ---------- lobby ---------- */
-.lobby { padding-bottom: calc(var(--safe-b) + 176px); }
 .stage { margin-top: auto; display: grid; gap: 14px; }
 .stage .mega { animation: rise 600ms 60ms var(--ease) both; }
-.party { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.seat { width: 22px; height: 22px; transform: rotate(45deg); margin: 0 3px; background: rgba(1, 10, 19, 0.6); border: 1px solid var(--line-soft); }
-.seat.taken { background: rgba(10, 200, 185, 0.18); border-color: var(--teal); }
-.seat.you { background: rgba(200, 170, 110, 0.25); border-color: var(--gold); box-shadow: 0 0 10px rgba(200, 170, 110, 0.5); }
-.party-text { margin-left: 8px; color: var(--muted); font-weight: 500; }
 
 /* ---------- queue ---------- */
 .queue-center { flex: 1; display: grid; place-items: center; position: relative; }
@@ -430,6 +424,8 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
   animation: rise 420ms var(--ease) both;
 }
 .me-name.empty { font-size: 22px; color: var(--muted); }
+/* Long names wrap instead of clipping now that the rune button shares the row. */
+.mecard .me-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; font-size: clamp(28px, 9vw, 40px); }
 .me-title { font-size: 14px; color: var(--muted); font-style: italic; text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8); animation: enter 500ms 100ms var(--ease) both; }
 .spells { display: flex; gap: 8px; flex: none; }
 .spell {
@@ -527,6 +523,165 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .spell-opt.on img { border-color: var(--gold-hi); box-shadow: 0 0 0 1px var(--gold), 0 0 16px -2px var(--gold); }
 .spell-opt.on span { color: var(--gold); font-weight: 700; }
 .spell-opt.other img { opacity: 0.5; }
+
+/* ---------- shared bits ---------- */
+.dock-row { display: flex; justify-content: center; gap: 4px; }
+.dock-row .btn.quiet { flex: 1; max-width: 200px; }
+.btn.quiet svg { color: var(--gold); }
+.btn.sm { height: 34px; padding: 0 14px; font-size: 11.5px; letter-spacing: 0.1em; }
+.sheet-note { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 18px 0; }
+.lobby { padding-bottom: calc(var(--safe-b) + 196px); }
+.home { padding-bottom: calc(var(--safe-b) + 176px); }
+.lobby .stage { margin-top: auto; }
+
+/* ---------- party ---------- */
+.party { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 22px; }
+.member {
+  display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 5px;
+  padding: 10px 4px 9px; min-width: 0; text-align: center;
+  background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--line-soft);
+  animation: rise 360ms var(--ease) both;
+  transition: border-color 160ms, transform 160ms var(--ease);
+}
+.member:disabled { cursor: default; }
+button.member:active:not(:disabled) { transform: scale(0.97); }
+.member.me { border-color: var(--gold); box-shadow: inset 0 0 16px rgba(200, 170, 110, 0.15); }
+.member-face { position: relative; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--gold-deep); background: rgba(1, 10, 19, 0.7); }
+.member-face img { border-radius: 0; }
+.member.me .member-face { border-color: var(--gold); }
+.crown { position: absolute; top: -8px; right: -8px; width: 18px; height: 18px; display: grid; place-items: center; color: var(--gold-hi); background: var(--ink); border: 1px solid var(--gold); transform: rotate(45deg); }
+.crown svg { transform: rotate(-45deg); width: 10px; height: 10px; }
+.member-name { max-width: 100%; font-size: 11px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member.me .member-name { color: var(--gold); }
+.member-sub { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--teal); }
+.member-roles { display: flex; gap: 3px; }
+.member.open { border-style: dashed; border-color: var(--line); color: var(--gold-deep); }
+.member.open .member-face { border-style: dashed; color: var(--gold); background: none; }
+.member.open .member-name { color: var(--muted); font-weight: 500; }
+.member.invited { border-style: dashed; border-color: rgba(10, 200, 185, 0.4); }
+.member.invited .member-face { border-color: rgba(10, 200, 185, 0.4); background: none; }
+
+/* ---------- roles ---------- */
+.role-glyph { flex: none; }
+.rg-frame { fill: rgba(1, 10, 19, 0.6); stroke: var(--gold-deep); stroke-width: 1; }
+.rg-lane { fill: none; stroke: var(--gold); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.r-jungle .rg-lane, .r-utility .rg-lane { fill: rgba(200, 170, 110, 0.18); }
+.r-unselected .rg-lane { stroke: var(--faint); }
+.r-fill .rg-lane { stroke: var(--teal); }
+.roles-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.role-slot {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; text-align: left;
+  background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--line); transition: border-color 160ms, transform 160ms var(--ease);
+}
+.role-slot:active:not(:disabled) { transform: scale(0.98); }
+.role-slot:disabled { opacity: 0.45; }
+.role-slot:not(.set):not(:disabled) { border-color: var(--teal); box-shadow: inset 0 0 14px rgba(10, 200, 185, 0.2); }
+.role-slot-text { display: grid; min-width: 0; }
+.role-slot-label { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.role-slot-name { font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--gold-hi); }
+.role-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.role-opt {
+  width: 100%; display: grid; justify-items: center; gap: 8px; padding: 16px 6px 12px;
+  background: rgba(1, 10, 19, 0.6); border: 1px solid var(--line-soft);
+  font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  transition: border-color 160ms, transform 160ms var(--ease);
+}
+.role-opt:active { transform: scale(0.96); }
+.role-opt.on { border-color: var(--gold); color: var(--gold-hi); box-shadow: inset 0 0 18px rgba(200, 170, 110, 0.18); }
+.role-opt.other { border-color: rgba(10, 200, 185, 0.4); }
+
+/* ---------- friends ---------- */
+.friends { display: grid; gap: 2px; }
+.friend { display: flex; align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--line-soft); }
+.friend.away { opacity: 0.55; }
+.friend-face { position: relative; width: 40px; height: 40px; flex: none; border: 1px solid var(--gold-deep); }
+.avail { position: absolute; right: -4px; bottom: -4px; width: 11px; height: 11px; transform: rotate(45deg); border: 2px solid var(--ink-2); background: var(--faint); }
+.a-chat { background: #1ed760; }
+.a-away { background: #e8b13a; }
+.a-dnd { background: var(--enemy); }
+.a-mobile { background: var(--teal-deep); }
+.friend-text { flex: 1; min-width: 0; display: grid; }
+.friend-name { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friend-tag { color: var(--faint); font-weight: 500; margin-left: 2px; }
+.friend-status { font-size: 12.5px; color: var(--muted); }
+.friend-flag { font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+.friend-flag.gold { color: var(--gold); }
+.member-actions { display: grid; gap: 10px; }
+
+/* ---------- incoming invite ---------- */
+.invite-banner {
+  position: fixed; z-index: 25; left: var(--pad); right: var(--pad); top: calc(var(--safe-t) + 64px);
+  display: grid; gap: 10px; padding: 14px 14px 12px;
+  background: linear-gradient(180deg, rgba(10, 30, 45, 0.96), rgba(1, 10, 19, 0.96));
+  border: 1px solid var(--gold); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), inset 0 0 20px rgba(10, 200, 185, 0.15);
+  animation: dropIn 360ms var(--spring) both;
+}
+@keyframes dropIn { from { opacity: 0; transform: translateY(-14px); } }
+.invite-text { display: grid; gap: 3px; color: var(--text); }
+.invite-text b { color: var(--gold-hi); font-weight: 700; }
+.invite-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- runes ---------- */
+.runes-sub { margin-top: -8px; }
+.pages { display: grid; gap: 8px; }
+.page {
+  display: flex; align-items: stretch;
+  background: rgba(10, 20, 40, 0.55); border: 1px solid var(--line-soft);
+  animation: rise 360ms var(--ease) both;
+  transition: border-color 160ms, background 160ms;
+}
+.page.on { border-color: var(--gold); background: linear-gradient(90deg, rgba(200, 170, 110, 0.14), rgba(10, 20, 40, 0.55) 60%); }
+.page-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 12px; text-align: left; }
+.page-key { width: 46px; height: 46px; flex: none; display: grid; place-items: center; border-radius: 50%; background: rgba(1, 10, 19, 0.8); border: 1px solid var(--gold-deep); }
+.page-key img { width: 40px; height: 40px; object-fit: contain; }
+.page.on .page-key { border-color: var(--gold); box-shadow: 0 0 14px -2px var(--gold); }
+.page-text { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.page-name { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-trees { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.page-trees img { width: 16px; height: 16px; object-fit: contain; }
+.page-trees .sep { width: 4px; height: 4px; margin: 0 4px; transform: rotate(45deg); background: var(--gold-deep); }
+.page-flag { flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal); }
+.page-flag.dim { color: var(--faint); }
+.page-edit { width: 48px; height: auto; flex: none; border: 0; border-left: 1px solid var(--line-soft); background: none; color: var(--gold); }
+
+.editor { gap: 14px; padding-bottom: calc(var(--safe-b) + 190px); }
+.editor .dock { background: linear-gradient(to top, var(--ink) 82%, rgba(1, 10, 19, 0)); padding-top: 36px; }
+.page-trees { text-overflow: ellipsis; }
+.page.on .page-flag { position: absolute; top: 6px; right: 56px; font-size: 9px; }
+.page { position: relative; }
+.icon-btn.danger-on { color: #fff; background: var(--enemy); border-color: var(--enemy); }
+.confirm-note { color: var(--enemy); font-size: 13px; font-weight: 600; margin-top: -6px; }
+.page-name-input {
+  height: 48px; padding: 0 14px; width: 100%;
+  background: rgba(1, 10, 19, 0.8); border: 1px solid var(--line); color: var(--gold-hi); outline: none;
+  font-family: var(--display); font-size: 17px; font-weight: 700; letter-spacing: 0.04em;
+}
+.page-name-input:focus { border-color: var(--gold); }
+.tree { display: grid; gap: 12px; padding: 14px 12px 16px; background: rgba(10, 20, 40, 0.45); border: 1px solid var(--line-soft); }
+.tree .eyebrow .count { color: var(--muted); margin-left: 6px; letter-spacing: 0.08em; }
+.tree-tabs { display: flex; gap: 8px; }
+.tree-tab { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-soft); background: rgba(1, 10, 19, 0.7); transition: border-color 160ms, box-shadow 160ms, transform 160ms var(--spring); }
+.tree-tab img { width: 26px; height: 26px; object-fit: contain; filter: grayscale(0.8) brightness(0.8); transition: filter 160ms; }
+.tree-tab.on { border-color: var(--gold); box-shadow: 0 0 14px -2px var(--gold); transform: scale(1.06); }
+.tree-tab.on img { filter: none; }
+.tree-name { font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold-hi); margin-top: -2px; }
+.perk-row { display: flex; justify-content: space-around; align-items: center; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.perk-row.keystones { border-top: 0; }
+.perk { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-soft); background: rgba(1, 10, 19, 0.8); transition: transform 160ms var(--spring), border-color 160ms, box-shadow 160ms, opacity 160ms, filter 160ms; }
+.perk img { width: 80%; height: 80%; object-fit: contain; }
+.perk.big { width: 62px; height: 62px; border: 0; background: none; }
+.perk.big img { width: 100%; height: 100%; }
+.perk.small { width: 34px; height: 34px; }
+.perk:active { transform: scale(0.92); }
+.perk.on { border-color: var(--gold); box-shadow: 0 0 14px -2px var(--gold); }
+.perk.big.on { filter: drop-shadow(0 0 10px rgba(200, 170, 110, 0.75)); transform: scale(1.06); }
+.perk.dim { opacity: 0.4; filter: grayscale(1); }
+.perk-info { min-height: 38px; font-size: 13px; line-height: 1.4; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
+.perk-info b { color: var(--gold-hi); }
+.spells .rune-btn { border-radius: 50%; border-color: var(--gold); display: grid; place-items: center; color: var(--gold); }
+.spells .rune-btn img { width: 86%; height: 86%; object-fit: contain; }
 
 /* ---------- toast ---------- */
 .toast {

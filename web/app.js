@@ -68,6 +68,9 @@ function indexData(d) {
     spells: new Map(d.spells.map((s) => [s.id, s])),
     spellList: d.spells,
     queues: d.queues,
+    styles: d.runes?.styles || [],
+    styleMap: new Map((d.runes?.styles || []).map((s) => [s.id, s])),
+    perks: new Map((d.runes?.perks || []).map((p) => [p.id, p])),
   };
 }
 
@@ -143,6 +146,11 @@ const Icon = {
   check: html`<svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   dice: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="7.2" cy="7.2" r="1.2" fill="currentColor"/><circle cx="12.8" cy="12.8" r="1.2" fill="currentColor"/><circle cx="10" cy="10" r="1.2" fill="currentColor"/></svg>`,
   x: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+  plus: html`<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+  crown: html`<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path d="M3 15h14l1-9-4.5 3.5L10 4 6.5 9.5 2 6Z" fill="currentColor"/></svg>`,
+  runes: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 2.5 16.5 10 10 17.5 3.5 10Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 6.5 13 10l-3 3.5L7 10Z" fill="currentColor"/></svg>`,
+  edit: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M4 16l.8-3.2L13 4.6l2.4 2.4-8.2 8.2Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
+  trash: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 6h10M8 6V4h4v2M6.5 6l.7 10h5.6l.7-10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   back: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   arrow: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   swords: html`<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 4l9.5 9.5M20 4l-9.5 9.5M6.5 15.5l2 2M17.5 15.5l-2 2M4.5 19.5l3-3M19.5 19.5l-3-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
@@ -239,12 +247,17 @@ function App() {
   else if (homeish) screen = html`<${Home} s=${state} />`;
   else screen = phaseScreen(state);
 
+  const live = link === 'open' && state?.lcu;
+  const quiet = !live || ['ChampSelect', 'GameStart', 'InProgress', 'Reconnect', 'ReadyCheck'].includes(state.phase);
   return html`
     <${Backdrop} src=${sc.src} tone=${sc.tone} />
     ${screen}
+    ${!quiet && state.invites?.length > 0 && html`<${InviteBanner} invite=${state.invites[0]} />`}
+    ${live && st.runesOpen && st.data && html`<${RunesScreen} s=${state} onClose=${() => update({ runesOpen: false })} />`}
     ${st.toast && html`<div class="toast" key=${st.toast.key} role="status">${st.toast.text}</div>`}
   `;
 }
+const openRunes = () => update({ runesOpen: true });
 
 function phaseScreen(s) {
   switch (s.phase) {
@@ -341,6 +354,7 @@ function Home({ s }) {
       </div>
       <footer class="dock">
         <button class="btn hex xl" onClick=${() => setPicking(true)}><span>${after ? 'Play again' : 'Play'}</span></button>
+        <div class="dock-row"><button class="btn quiet" onClick=${openRunes}>${Icon.runes}<span>Runes</span></button></div>
       </footer>
       ${picking && html`<${ModeSelect} onClose=${() => setPicking(false)} />`}
     </main>`;
@@ -403,32 +417,225 @@ function ModeSelect({ current, onClose }) {
 function Lobby({ s }) {
   const [changing, setChanging] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sheet, setSheet] = useState(null); // 'friends' | { member } | { role: 1|2 }
   const lobby = s.lobby;
-  const members = lobby?.members ?? 1;
   const leader = lobby?.isLeader;
+  const me = lobby?.members.find((m) => m.me) || {};
+  const rolesDone = !lobby?.positions || me.first === 'FILL' || (me.first !== 'UNSELECTED' && me.second !== 'UNSELECTED');
   const find = async () => { setBusy(true); await send('search'); setBusy(false); };
+  const others = (lobby?.members.length || 1) - 1;
+
+  let primary;
+  if (!rolesDone) primary = html`<button class="btn hex xl" onClick=${() => setSheet({ role: me.first === 'UNSELECTED' ? 1 : 2 })}>Choose your roles</button>`;
+  else if (leader) primary = html`<button class="btn hex xl" disabled=${busy || !lobby?.canStart} onClick=${find}>Find match</button>`;
+  else primary = html`<p class="dock-note">The party leader starts the queue</p>`;
+
   return html`
     <main class="screen lobby">
       <header class="top-row">
         <button class="icon-btn glass back" onClick=${() => send('leaveLobby')} aria-label="Leave lobby">${Icon.back}</button>
-        <span class="chip">Lobby</span>
+        <span class="chip">${others ? `Party of ${others + 1}` : 'Lobby'}</span>
       </header>
       <div class="stage">
         <p class="eyebrow">${mapOf(lobby?.queueId).place}</p>
         <h1 class="mega">${s.queueName || 'Lobby'}</h1>
         <${Rule} />
-        <p class="sub">${leader ? 'Ready when you are.' : 'Waiting for the party leader.'}</p>
-        <div class="party" aria-label=${`${members} in party`}>
-          ${Array.from({ length: 5 }, (_, i) => html`<span class=${cx('seat', i < members && 'taken', i === 0 && 'you')} />`)}
-          <span class="party-text">${members > 1 ? `You and ${members - 1} other${members > 2 ? 's' : ''}` : 'Just you'}</span>
-        </div>
+        <p class="sub">${!leader ? 'Waiting for the party leader.' : lobby?.canStart ? 'Ready when you are.' : rolesDone ? 'Waiting for everyone to pick roles.' : 'Pick your roles to queue.'}</p>
       </div>
+
+      <${Party} lobby=${lobby} onInvite=${() => setSheet('friends')} onMember=${(m) => setSheet({ member: m })} />
+      ${lobby?.positions && html`<${RolePicker} me=${me} onPick=${(slot) => setSheet({ role: slot })} />`}
+
       <footer class="dock">
-        ${leader && html`<button class="btn hex xl" disabled=${busy || !lobby?.canStart} onClick=${find}>Find match</button>`}
-        ${leader && html`<button class="btn quiet" onClick=${() => setChanging(true)}>Change mode</button>`}
+        ${primary}
+        <div class="dock-row">
+          <button class="btn quiet" onClick=${openRunes}>${Icon.runes}<span>Runes</span></button>
+          ${leader && html`<button class="btn quiet" onClick=${() => setChanging(true)}>Change mode</button>`}
+        </div>
       </footer>
       ${changing && html`<${ModeSelect} current=${lobby?.queueId} onClose=${() => setChanging(false)} />`}
+      ${sheet === 'friends' && html`<${FriendsSheet} lobby=${lobby} onClose=${() => setSheet(null)} />`}
+      ${sheet?.member && html`<${MemberSheet} member=${sheet.member} onClose=${() => setSheet(null)} />`}
+      ${sheet?.role && html`<${RoleSheet} slot=${sheet.role} me=${me} onClose=${() => setSheet(null)} />`}
     </main>`;
+}
+
+// ---------------------------------------------------------------------------
+// Party: members, invites, roles
+// ---------------------------------------------------------------------------
+const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'Bot', UTILITY: 'Support', FILL: 'Fill', UNSELECTED: 'None' };
+const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY', 'FILL'];
+const profileIcon = (id) => asset(`/lol-game-data/assets/v1/profile-icons/${id ?? 29}.jpg`);
+
+// Lane glyphs: a little map square with the lane traced in.
+function RoleGlyph({ role, size = 22 }) {
+  const lane = {
+    TOP: html`<path d="M6 18V6h12" />`,
+    BOTTOM: html`<path d="M6 18h12V6" />`,
+    MIDDLE: html`<path d="M7 17 17 7" />`,
+    JUNGLE: html`<path d="M12 6.5 16.5 14h-9Z M12 14v4" />`,
+    UTILITY: html`<path d="M12 5.5 17.5 8v4c0 3.2-2.4 5.6-5.5 6.5C8.9 17.6 6.5 15.2 6.5 12V8Z" />`,
+    FILL: html`<path d="M12 6v12M6 12h12M8 8l8 8M16 8l-8 8" />`,
+  }[role];
+  return html`
+    <svg class=${cx('role-glyph', `r-${(role || 'none').toLowerCase()}`)} viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="1" class="rg-frame" />
+      ${lane ? html`<g class="rg-lane">${lane}</g>` : html`<path d="M9 12h6" class="rg-lane" />`}
+    </svg>`;
+}
+
+function Party({ lobby, onInvite, onMember }) {
+  if (!lobby) return null;
+  const slots = [];
+  for (const m of lobby.members) slots.push({ kind: 'member', m });
+  for (const i of lobby.invited) slots.push({ kind: 'invited', i });
+  while (slots.length < lobby.maxSize) slots.push({ kind: 'open' });
+  return html`
+    <section class="party" aria-label="Party">
+      ${slots.slice(0, lobby.maxSize).map((sl, k) => {
+        if (sl.kind === 'member') {
+          const { m } = sl;
+          const tappable = lobby.isLeader && !m.me;
+          return html`
+            <button key=${'m' + m.summonerId} class=${cx('member', m.me && 'me', m.isLeader && 'leader')} disabled=${!tappable} onClick=${() => onMember(m)}>
+              <span class="member-face"><img src=${profileIcon(m.icon)} alt="" />${m.isLeader && html`<i class="crown" title="Party leader">${Icon.crown}</i>`}</span>
+              <span class="member-name">${m.me ? 'You' : m.name}</span>
+              ${lobby.positions && html`<span class="member-roles"><${RoleGlyph} role=${m.first} size=${15} /><${RoleGlyph} role=${m.second} size=${15} /></span>`}
+            </button>`;
+        }
+        if (sl.kind === 'invited') return html`
+          <div key=${'i' + sl.i.summonerId} class="member invited">
+            <span class="member-face"><span class="pulse" /></span>
+            <span class="member-name">${sl.i.name}</span>
+            <span class="member-sub">Invited</span>
+          </div>`;
+        return html`
+          <button key=${'o' + k} class="member open" onClick=${onInvite} aria-label="Invite a friend">
+            <span class="member-face">${Icon.plus}</span>
+            <span class="member-name">Invite</span>
+          </button>`;
+      })}
+    </section>`;
+}
+
+function RolePicker({ me, onPick }) {
+  return html`
+    <section class="roles-pick" aria-label="Your roles">
+      ${[1, 2].map((slot) => {
+        const role = slot === 1 ? me.first : me.second;
+        const off = slot === 2 && me.first === 'FILL';
+        return html`
+          <button key=${slot} class=${cx('role-slot', role !== 'UNSELECTED' && 'set')} disabled=${off} onClick=${() => onPick(slot)}>
+            <${RoleGlyph} role=${off ? 'UNSELECTED' : role} size=${30} />
+            <span class="role-slot-text">
+              <span class="role-slot-label">${slot === 1 ? 'Primary' : 'Secondary'}</span>
+              <span class="role-slot-name">${off ? 'Not needed' : role === 'UNSELECTED' ? 'Choose' : ROLE_NAMES[role]}</span>
+            </span>
+          </button>`;
+      })}
+    </section>`;
+}
+
+function RoleSheet({ slot, me, onClose }) {
+  const current = slot === 1 ? me.first : me.second;
+  const other = slot === 1 ? me.second : me.first;
+  const choose = (role) => {
+    onClose();
+    let first = me.first, second = me.second;
+    if (slot === 1) {
+      if (role === second) second = first; // swap, like the client
+      first = role;
+      if (first === 'FILL') second = 'UNSELECTED';
+    } else {
+      if (role === first) first = second;
+      second = role;
+    }
+    send('positions', { first, second });
+  };
+  const options = ROLE_ORDER.filter((r) => slot === 1 || r !== 'FILL');
+  return html`
+    <${Sheet} title=${slot === 1 ? 'Primary role' : 'Secondary role'} onClose=${onClose}>
+      <ul class="role-grid">
+        ${options.map((r) => html`
+          <li key=${r}>
+            <button class=${cx('role-opt', r === current && 'on', r === other && 'other')} onClick=${() => choose(r)}>
+              <${RoleGlyph} role=${r} size=${40} />
+              <span>${ROLE_NAMES[r]}</span>
+            </button>
+          </li>`)}
+      </ul>
+    </${Sheet}>`;
+}
+
+const FRIEND_STATUS = {
+  inGame: 'In game', championSelect: 'In champ select', inQueue: 'In queue', outOfGame: 'Online',
+};
+function friendStatus(f) {
+  if (f.availability === 'offline') return 'Offline';
+  if (f.availability === 'mobile') return 'On mobile';
+  if (f.status?.startsWith('hosting')) return 'In a lobby';
+  const s = FRIEND_STATUS[f.status] || 'Online';
+  return f.availability === 'away' && s === 'Online' ? 'Away' : s;
+}
+
+function FriendsSheet({ lobby, onClose }) {
+  const [list, setList] = useState(null);
+  const [sent, setSent] = useState(new Set());
+  useEffect(() => { send('friends').then((r) => setList(r.ok ? r.data : [])); }, []);
+  const inParty = new Set(lobby.members.map((m) => m.summonerId));
+  const invited = new Set(lobby.invited.map((i) => i.summonerId));
+  const full = lobby.members.length + lobby.invited.length >= lobby.maxSize;
+  const invite = async (f) => {
+    setSent((x) => new Set(x).add(f.summonerId));
+    const r = await send('invite', { summonerId: f.summonerId });
+    if (!r.ok) setSent((x) => { const n = new Set(x); n.delete(f.summonerId); return n; });
+  };
+  return html`
+    <${Sheet} title="Invite friends" onClose=${onClose}>
+      ${!list ? html`<p class="sheet-note"><span class="pulse" />Loading friends</p>` : !list.length ? html`<p class="sheet-note">No friends to show.</p>` : html`
+        <ul class="friends">
+          ${list.map((f) => {
+            const here = inParty.has(f.summonerId), pend = invited.has(f.summonerId) || sent.has(f.summonerId);
+            const reachable = f.availability !== 'offline' && f.availability !== 'mobile';
+            return html`
+              <li key=${f.summonerId} class=${cx('friend', !reachable && 'away')}>
+                <span class="friend-face"><img src=${profileIcon(f.icon)} alt="" loading="lazy" /><i class=${'avail a-' + f.availability} /></span>
+                <span class="friend-text">
+                  <span class="friend-name">${f.name}${f.tag && html`<span class="friend-tag">#${f.tag}</span>`}</span>
+                  <span class="friend-status">${friendStatus(f)}</span>
+                </span>
+                ${here ? html`<span class="friend-flag">In party</span>`
+                  : pend ? html`<span class="friend-flag gold">Invited</span>`
+                  : html`<button class="btn hex sm" disabled=${!reachable || full} onClick=${() => invite(f)}>Invite</button>`}
+              </li>`;
+          })}
+        </ul>`}
+    </${Sheet}>`;
+}
+
+function MemberSheet({ member, onClose }) {
+  const act = (type) => { onClose(); send(type, { summonerId: member.summonerId }); };
+  return html`
+    <${Sheet} title=${member.name} onClose=${onClose}>
+      <div class="member-actions">
+        <button class="btn glass" onClick=${() => act('promote')}>${Icon.crown}<span>Make party leader</span></button>
+        <button class="btn danger" onClick=${() => act('kick')}>Remove from party</button>
+      </div>
+    </${Sheet}>`;
+}
+
+function InviteBanner({ invite }) {
+  const [busy, setBusy] = useState(false);
+  const q = store.data?.queues.find((x) => x.id === invite.queueId)?.name;
+  const go = async (type) => { setBusy(true); await send(type, { invitationId: invite.id }); setBusy(false); };
+  return html`
+    <div class="invite-banner" role="alert" key=${invite.id}>
+      <p class="invite-text"><span class="eyebrow">Party invite</span><span><b>${invite.from}</b> invited you${q ? html` to <b>${q}</b>` : ''}</span></p>
+      <div class="invite-actions">
+        <button class="btn quiet sm" disabled=${busy} onClick=${() => go('declineInvite')}>Decline</button>
+        <button class="btn hex sm" disabled=${busy} onClick=${() => go('acceptInvite')}>Join</button>
+      </div>
+    </div>`;
 }
 
 function Queue({ s }) {
@@ -637,6 +844,7 @@ function MeCard({ d, selected, banning, onSpell }) {
       </div>
       ${!sess.spectating && html`
         <div class="spells">
+          <${RuneButton} />
           ${[me.spell1Id, me.spell2Id].map((id, i) => html`
             <button class="spell" key=${i} onClick=${() => onSpell(i + 1)} aria-label=${`Change ${i ? 'F' : 'D'} spell`}>
               ${id > 0 && html`<img src=${asset(store.data?.spells.get(id)?.icon)} alt="" />`}
@@ -739,6 +947,182 @@ function Hero({ eyebrow, body }) {
         <p class="sub">${body}</p>
       </div>
     </main>`;
+}
+
+// ---------------------------------------------------------------------------
+// Runes: pages, and an editor that follows the tree rules
+// ---------------------------------------------------------------------------
+const perkOf = (id) => store.data?.perks.get(id);
+const styleOf = (id) => store.data?.styleMap.get(id);
+const keystoneRow = (st) => (st?.slots || []).find((sl) => sl.type === 'kKeyStone') || { perks: [] };
+const regularRows = (st) => (st?.slots || []).filter((sl) => sl.type !== 'kKeyStone' && sl.type !== 'kStatMod');
+const shardRows = (st) => (st?.slots || []).filter((sl) => sl.type === 'kStatMod');
+const activePage = (s) => s?.runes?.pages.find((p) => p.id === s.runes.current) || null;
+
+function RuneButton() {
+  const ks = perkOf(activePage(store.state)?.selectedPerkIds[0]);
+  return html`<button class="spell rune-btn" onClick=${openRunes} aria-label="Runes">${ks ? html`<img src=${asset(ks.icon)} alt="" />` : Icon.runes}</button>`;
+}
+
+function RunesScreen({ s, onClose }) {
+  const [editing, setEditing] = useState(null); // a page, or 'new'
+  const [closing, setClosing] = useState(false);
+  const close = () => { setClosing(true); setTimeout(onClose, 180); };
+  useEffect(() => { const k = (e) => e.key === 'Escape' && !editing && close(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [editing]);
+  const pages = s.runes?.pages || [];
+  if (editing) return html`<${RuneEditor} page=${editing === 'new' ? null : editing} onClose=${() => setEditing(null)} />`;
+  return html`
+    <div class=${cx('modesel runes', closing && 'closing')} role="dialog" aria-label="Runes">
+      <header class="top-row">
+        <button class="icon-btn glass" onClick=${close} aria-label="Back">${Icon.back}</button>
+        <h1 class="modesel-title">Runes</h1>
+        <span class="top-spacer" />
+      </header>
+      <p class="sub runes-sub">Tap a page to use it. The client switches right away.</p>
+      ${!pages.length ? html`<p class="sheet-note">No rune pages yet.</p>` : html`
+        <ul class="pages">
+          ${pages.map((p, i) => {
+            const ks = perkOf(p.selectedPerkIds[0]), pr = styleOf(p.primaryStyleId), sb = styleOf(p.subStyleId);
+            const on = p.id === s.runes.current;
+            return html`
+              <li key=${p.id} style=${{ animationDelay: `${i * 35}ms` }} class=${cx('page', on && 'on')}>
+                <button class="page-main" onClick=${() => !on && send('runeSelect', { pageId: p.id })} aria-pressed=${on}>
+                  <span class="page-key">${ks && html`<img src=${asset(ks.icon)} alt="" />`}</span>
+                  <span class="page-text">
+                    <span class="page-name">${p.name}</span>
+                    <span class="page-trees">
+                      ${pr && html`<img src=${asset(pr.icon)} alt="" />${pr.name}`}
+                      ${sb && html`<span class="sep" /><img src=${asset(sb.icon)} alt="" />${sb.name}`}
+                    </span>
+                  </span>
+                  ${on ? html`<span class="page-flag">Active</span>` : !p.isEditable && html`<span class="page-flag dim">Preset</span>`}
+                </button>
+                ${p.isEditable && html`<button class="icon-btn page-edit" onClick=${() => setEditing(p)} aria-label=${`Edit ${p.name}`}>${Icon.edit}</button>`}
+              </li>`;
+          })}
+        </ul>`}
+      <footer class="dock"><button class="btn hex xl" onClick=${() => setEditing('new')}>New page</button></footer>
+    </div>`;
+}
+
+function PerkBtn({ id, on, dim, size = '', onPick }) {
+  const p = perkOf(id);
+  return html`
+    <button class=${cx('perk', size, on && 'on', dim && 'dim')} onClick=${onPick} aria-pressed=${!!on} aria-label=${p?.name || 'Rune'}>
+      ${p && html`<img src=${asset(p.icon)} alt="" loading="lazy" />`}
+    </button>`;
+}
+
+function RuneEditor({ page, onClose }) {
+  const styles = store.data.styles;
+  const [v, setV] = useState(() => {
+    if (page) {
+      const ids = page.selectedPerkIds;
+      const subRows = regularRows(styleOf(page.subStyleId));
+      return {
+        name: page.name, primary: page.primaryStyleId, sub: page.subStyleId,
+        keystone: ids[0], prim: ids.slice(1, 4),
+        subSel: ids.slice(4, 6).map((id) => ({ row: subRows.findIndex((r) => r.perks.includes(id)), id })).filter((x) => x.row >= 0),
+        shards: ids.slice(6, 9),
+      };
+    }
+    const st = styles.find((x) => x.id === 8000) || styles[0];
+    return { name: 'New page', primary: st.id, sub: st.subs[0], keystone: null, prim: [null, null, null], subSel: [], shards: st.defaults.slice(6, 9) };
+  });
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [sure, setSure] = useState(false);
+  const P = styleOf(v.primary), Sb = styleOf(v.sub);
+  const patch = (x) => setV((cur) => ({ ...cur, ...x }));
+
+  const pickPrimary = (id) => {
+    if (id === v.primary) return;
+    const st = styleOf(id);
+    const sub = v.sub === id || !st.subs.includes(v.sub) ? st.subs[0] : v.sub;
+    patch({ primary: id, keystone: null, prim: [null, null, null], sub, subSel: sub === v.sub ? v.subSel : [] });
+  };
+  const pickSub = (id) => id !== v.sub && patch({ sub: id, subSel: [] });
+  const tap = (id, fn) => () => { setInfo(id); fn(); };
+  // Two secondary runes from different rows; a third tap replaces the older one.
+  const pickSubRune = (row, id) => {
+    let sel = v.subSel.filter((x) => x.row !== row).concat({ row, id });
+    if (sel.length > 2) sel = sel.slice(-2);
+    patch({ subSel: sel });
+  };
+
+  const ids = [v.keystone, ...v.prim, ...[...v.subSel].sort((a, b) => a.row - b.row).map((x) => x.id), ...v.shards];
+  const done = ids.length === 9 && ids.every(Boolean) && v.name.trim();
+  const missing = !v.keystone ? 'Pick a keystone' : v.prim.some((x) => !x) ? 'Pick one rune in each primary row' : v.subSel.length < 2 ? 'Pick two secondary runes' : !v.name.trim() ? 'Name the page' : '';
+
+  const save = async () => {
+    setBusy(true);
+    const r = await send('runeSave', { pageId: page?.id ?? null, name: v.name.trim(), primaryStyleId: v.primary, subStyleId: v.sub, selectedPerkIds: ids });
+    setBusy(false);
+    if (r.ok) { toast(page ? 'Rune page saved' : 'New page saved and set active'); onClose(); }
+  };
+  const del = async () => {
+    if (!sure) { setSure(true); setTimeout(() => setSure(false), 3000); return; }
+    setBusy(true);
+    const r = await send('runeDelete', { pageId: page.id });
+    setBusy(false);
+    if (r.ok) { toast('Rune page deleted'); onClose(); }
+  };
+  const ip = perkOf(info);
+
+  return html`
+    <div class="modesel runes editor" role="dialog" aria-label=${page ? 'Edit rune page' : 'New rune page'}>
+      <header class="top-row">
+        <button class="icon-btn glass" onClick=${onClose} aria-label="Back to pages">${Icon.back}</button>
+        <h1 class="modesel-title">${page ? 'Edit page' : 'New page'}</h1>
+        ${page ? html`<button class=${cx('icon-btn glass', sure && 'danger-on')} disabled=${busy} onClick=${del} aria-label=${sure ? 'Tap again to delete' : 'Delete page'}>${Icon.trash}</button>` : html`<span class="top-spacer" />`}
+      </header>
+      ${sure && html`<p class="confirm-note">Tap the bin again to delete this page.</p>`}
+      <input class="page-name-input" value=${v.name} maxlength="50" aria-label="Page name"
+        onInput=${(e) => patch({ name: e.target.value })} autocomplete="off" spellcheck="false" enterkeyhint="done" />
+
+      <section class="tree">
+        <p class="eyebrow">Primary</p>
+        <div class="tree-tabs" role="radiogroup" aria-label="Primary tree">
+          ${styles.map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.primary} class=${cx('tree-tab', st.id === v.primary && 'on')} onClick=${() => pickPrimary(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
+        </div>
+        <p class="tree-name">${P?.name}</p>
+        <div class="perk-row keystones">
+          ${keystoneRow(P).perks.map((id) => html`<${PerkBtn} key=${id} id=${id} size="big" on=${v.keystone === id} dim=${v.keystone && v.keystone !== id} onPick=${tap(id, () => patch({ keystone: id }))} />`)}
+        </div>
+        ${regularRows(P).map((row, ri) => html`
+          <div class="perk-row" key=${'p' + ri}>
+            ${row.perks.map((id) => html`<${PerkBtn} key=${id} id=${id} on=${v.prim[ri] === id} dim=${v.prim[ri] && v.prim[ri] !== id} onPick=${tap(id, () => patch({ prim: v.prim.map((x, i) => (i === ri ? id : x)) }))} />`)}
+          </div>`)}
+      </section>
+
+      <section class="tree">
+        <p class="eyebrow">Secondary <span class="count">${v.subSel.length}/2</span></p>
+        <div class="tree-tabs" role="radiogroup" aria-label="Secondary tree">
+          ${(P?.subs || []).map(styleOf).filter(Boolean).map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.sub} class=${cx('tree-tab', st.id === v.sub && 'on')} onClick=${() => pickSub(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
+        </div>
+        <p class="tree-name">${Sb?.name}</p>
+        ${regularRows(Sb).map((row, ri) => {
+          const chosen = v.subSel.find((x) => x.row === ri);
+          return html`
+            <div class="perk-row" key=${'s' + ri}>
+              ${row.perks.map((id) => html`<${PerkBtn} key=${id} id=${id} on=${chosen?.id === id} dim=${(chosen && chosen.id !== id) || (!chosen && v.subSel.length === 2)} onPick=${tap(id, () => pickSubRune(ri, id))} />`)}
+            </div>`;
+        })}
+      </section>
+
+      <section class="tree">
+        <p class="eyebrow">Shards</p>
+        ${shardRows(P).map((row, ri) => html`
+          <div class="perk-row shards" key=${'x' + ri}>
+            ${row.perks.map((id, k) => html`<${PerkBtn} key=${k} id=${id} size="small" on=${v.shards[ri] === id} dim=${v.shards[ri] && v.shards[ri] !== id} onPick=${tap(id, () => patch({ shards: v.shards.map((x, i) => (i === ri ? id : x)) }))} />`)}
+          </div>`)}
+      </section>
+
+      <footer class="dock">
+        <p class="perk-info" aria-live="polite">${ip ? html`<b>${ip.name}</b> ${ip.desc}` : 'Tap a rune to see what it does.'}</p>
+        <button class="btn hex xl" disabled=${!done || busy} onClick=${save}>${done ? (busy ? 'Saving…' : 'Save page') : missing}</button>
+      </footer>
+    </div>`;
 }
 
 function Sheet({ title, onClose, children }) {

@@ -9,7 +9,12 @@ const URI = {
   search: '/lol-matchmaking/v1/search',
   readyCheck: '/lol-matchmaking/v1/ready-check',
   session: '/lol-champ-select/v1/session',
+  invites: '/lol-lobby/v2/received-invitations',
+  runePages: '/lol-perks/v1/pages',
+  runeCurrent: '/lol-perks/v1/currentpage',
 };
+const POSITION_PREFS = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY', 'FILL', 'UNSELECTED'];
+const stripTags = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 const BY_URI = Object.fromEntries(Object.entries(URI).map(([k, v]) => [v, k]));
 
 // Queues offered on the phone's "start a lobby" list.
@@ -39,6 +44,7 @@ export class ClientState extends EventEmitter {
       lcu: false, phase: 'None', lobby: null, search: null, readyCheck: null,
       session: null, sessionAt: 0, queueName: null, gameMode: null,
       pickable: [], bannable: [],
+      invites: null, runePages: null, runeCurrent: null,
     };
   }
 
@@ -56,9 +62,11 @@ export class ClientState extends EventEmitter {
   async #loadData() {
     // The client can take a few seconds to serve game data after it starts.
     for (let i = 0; i < 10 && this.lcu.connected; i++) {
-      const [champs, spells] = await Promise.all([
+      const [champs, spells, styles, perks] = await Promise.all([
         this.lcu.get('/lol-game-data/assets/v1/champion-summary.json').catch(() => null),
         this.lcu.get('/lol-game-data/assets/v1/summoner-spells.json').catch(() => null),
+        this.lcu.get('/lol-game-data/assets/v1/perkstyles.json').catch(() => null),
+        this.lcu.get('/lol-game-data/assets/v1/perks.json').catch(() => null),
       ]);
       if (Array.isArray(champs) && champs.length > 1 && Array.isArray(spells)) {
         this.data = {
@@ -70,6 +78,15 @@ export class ClientState extends EventEmitter {
             .filter((s) => s.id > 0 && s.id < 100 && s.gameModes?.length)
             .map((s) => ({ id: s.id, name: s.name, icon: s.iconPath, modes: s.gameModes })),
           queues: QUEUES,
+          runes: {
+            styles: (styles?.styles || []).map((s) => ({
+              id: s.id, name: s.name, icon: s.iconPath,
+              slots: (s.slots || []).map((sl) => ({ type: sl.type, perks: sl.perks || [] })),
+              subs: s.allowedSubStyles || [], defaults: s.defaultPerks || [],
+            })),
+            perks: (Array.isArray(perks) ? perks : []).filter((p) => p.id > 0)
+              .map((p) => ({ id: p.id, name: p.name, icon: p.iconPath, desc: stripTags(p.shortDesc) })),
+          },
         };
         this.emit('data', this.data);
         return;
@@ -159,7 +176,26 @@ export class ClientState extends EventEmitter {
         queueId: s.lobby.gameConfig?.queueId,
         isLeader: !!s.lobby.localMember?.isLeader,
         canStart: !!s.lobby.canStartActivity,
-        members: s.lobby.members?.length ?? 1,
+        positions: !!s.lobby.gameConfig?.showPositionSelector,
+        maxSize: s.lobby.gameConfig?.maxLobbySize || 5,
+        members: (s.lobby.members || []).map((m) => ({
+          summonerId: m.summonerId, name: m.gameName || m.summonerName || '', tag: m.gameTag || m.tagLine || '',
+          icon: m.summonerIconId, isLeader: !!m.isLeader,
+          me: !!(m.puuid && m.puuid === s.lobby.localMember?.puuid),
+          first: m.firstPositionPreference || 'UNSELECTED', second: m.secondPositionPreference || 'UNSELECTED',
+        })),
+        invited: (s.lobby.invitations || []).filter((i) => i.state === 'Pending')
+          .map((i) => ({ summonerId: i.toSummonerId, name: i.toSummonerName || '' })),
+      },
+      invites: (Array.isArray(s.invites) ? s.invites : []).filter((i) => i.state === 'Pending').map((i) => ({
+        id: i.invitationId, from: i.fromSummonerName || '', queueId: i.gameConfig?.queueId ?? null,
+      })),
+      runes: {
+        pages: (Array.isArray(s.runePages) ? s.runePages : []).filter((p) => p && p.id).map((p) => ({
+          id: p.id, name: p.name, primaryStyleId: p.primaryStyleId, subStyleId: p.subStyleId,
+          selectedPerkIds: p.selectedPerkIds || [], isEditable: !!p.isEditable,
+        })),
+        current: s.runeCurrent?.id ?? null,
       },
       search: s.search && s.search.searchState === 'Searching'
         ? { timeInQueue: s.search.timeInQueue, estimate: s.search.estimatedQueueTime }
@@ -197,6 +233,37 @@ export class ClientState extends EventEmitter {
     return (sess.actions || []).flat().filter((a) => a.actorCellId === sess.localPlayerCellId && !a.completed);
   }
 
+  #page(id) {
+    return (Array.isArray(this.s.runePages) ? this.s.runePages : []).find((p) => p.id === id) || null;
+  }
+
+  // A page must follow the tree rules: keystone + one per row from the primary tree,
+  // two from different rows of an allowed secondary tree, then one shard per shard row.
+  #validRunePage(msg) {
+    const styles = this.data?.runes?.styles || [];
+    const name = String(msg.name ?? '').trim().slice(0, 50);
+    const primary = styles.find((s) => s.id === msg.primaryStyleId);
+    const sub = styles.find((s) => s.id === msg.subStyleId);
+    const ids = Array.isArray(msg.selectedPerkIds) ? msg.selectedPerkIds : [];
+    const bad = (why) => { throw new Error(`That rune page isn’t valid (${why})`); };
+    if (!name) bad('give it a name');
+    if (!primary || !sub) bad('unknown tree');
+    if (primary.id === sub.id || !primary.subs.includes(sub.id)) bad('pick a different secondary tree');
+    if (ids.length !== 9 || !ids.every((x) => Number.isInteger(x) && x > 0)) bad('choose every rune');
+    const rows = (style, type) => style.slots.filter((sl) => sl.type === type || (type === 'regular' && sl.type !== 'kKeyStone' && sl.type !== 'kStatMod'));
+    const [keystoneRow] = rows(primary, 'kKeyStone');
+    const primaryRows = rows(primary, 'regular');
+    const subRows = rows(sub, 'regular');
+    const shardRows = rows(primary, 'kStatMod');
+    if (!keystoneRow?.perks.includes(ids[0])) bad('keystone');
+    for (let i = 0; i < 3; i++) if (!primaryRows[i]?.perks.includes(ids[1 + i])) bad('primary runes');
+    const subRowOf = (id) => subRows.findIndex((r) => r.perks.includes(id));
+    const r1 = subRowOf(ids[4]), r2 = subRowOf(ids[5]);
+    if (r1 < 0 || r2 < 0 || r1 === r2) bad('secondary runes');
+    for (let i = 0; i < 3; i++) if (!shardRows[i]?.perks.includes(ids[6 + i])) bad('shards');
+    return { name, primaryStyleId: primary.id, subStyleId: sub.id, selectedPerkIds: ids };
+  }
+
   async #call(method, path, body) {
     const { status, data } = await this.lcu.request(method, path, body);
     if (status >= 400) throw new Error(data?.message || `League client refused (${status})`);
@@ -212,6 +279,66 @@ export class ClientState extends EventEmitter {
         return this.#call('POST', '/lol-lobby/v2/lobby', { queueId });
       }
       case 'leaveLobby': return this.#call('DELETE', '/lol-lobby/v2/lobby');
+
+      // ---- party ----
+      case 'friends': {
+        const list = await this.lcu.get('/lol-chat/v1/friends');
+        if (!Array.isArray(list)) throw new Error('Couldn’t load your friends list');
+        const rank = { chat: 0, mobile: 1, away: 2, dnd: 3, offline: 4 };
+        return list
+          .filter((f) => int(f.summonerId))
+          .map((f) => ({
+            summonerId: f.summonerId, name: f.gameName || f.name || '', tag: f.gameTag || '',
+            icon: f.icon, availability: f.availability || 'offline', status: f.lol?.gameStatus || '',
+          }))
+          .sort((a, b) => (rank[a.availability] ?? 5) - (rank[b.availability] ?? 5) || a.name.localeCompare(b.name));
+      }
+      case 'invite': {
+        const toSummonerId = int(msg.summonerId);
+        if (!toSummonerId) throw new Error('Pick a friend');
+        return this.#call('POST', '/lol-lobby/v2/lobby/invitations', [{ toSummonerId }]);
+      }
+      case 'kick': case 'promote': {
+        const id = int(msg.summonerId);
+        if (!id) throw new Error('Pick a party member');
+        return this.#call('POST', `/lol-lobby/v2/lobby/members/${id}/${msg.type}`);
+      }
+      case 'acceptInvite': case 'declineInvite': {
+        const id = String(msg.invitationId || '');
+        if (!/^[\w.:-]{1,100}$/.test(id)) throw new Error('Unknown invite');
+        return this.#call('POST', `/lol-lobby/v2/received-invitations/${encodeURIComponent(id)}/${msg.type === 'acceptInvite' ? 'accept' : 'decline'}`);
+      }
+      case 'positions': {
+        const first = String(msg.first), second = String(msg.second);
+        if (!POSITION_PREFS.includes(first) || !POSITION_PREFS.includes(second)) throw new Error('Unknown role');
+        if (first !== 'UNSELECTED' && first !== 'FILL' && first === second) throw new Error('Pick two different roles');
+        return this.#call('PUT', '/lol-lobby/v2/lobby/members/localMember/position-preferences', { firstPreference: first, secondPreference: second });
+      }
+
+      // ---- runes ----
+      case 'runeSelect': {
+        const id = int(msg.pageId);
+        if (!id || !this.#page(id)) throw new Error('Unknown rune page');
+        return this.#call('PUT', '/lol-perks/v1/currentpage', id);
+      }
+      case 'runeSave': {
+        const page = this.#validRunePage(msg);
+        const id = msg.pageId == null ? null : int(msg.pageId);
+        if (id) {
+          const existing = this.#page(id);
+          if (!existing) throw new Error('Unknown rune page');
+          if (!existing.isEditable) throw new Error('That page can’t be edited');
+          return this.#call('PUT', `/lol-perks/v1/pages/${id}`, { ...existing, ...page, id });
+        }
+        return this.#call('POST', '/lol-perks/v1/pages', { ...page, current: true });
+      }
+      case 'runeDelete': {
+        const id = int(msg.pageId);
+        const existing = id && this.#page(id);
+        if (!existing) throw new Error('Unknown rune page');
+        if (!existing.isEditable) throw new Error('That page can’t be deleted');
+        return this.#call('DELETE', `/lol-perks/v1/pages/${id}`);
+      }
       case 'search': return this.#call('POST', '/lol-lobby/v2/lobby/matchmaking/search');
       case 'cancelSearch': return this.#call('DELETE', '/lol-lobby/v2/lobby/matchmaking/search');
       case 'accept': return this.#call('POST', '/lol-matchmaking/v1/ready-check/accept');

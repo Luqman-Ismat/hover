@@ -35,7 +35,7 @@ async function fetchAsset(p) {
 }
 
 // ---- state ----------------------------------------------------------------
-const S = { phase: 'Lobby', lobby: null, search: null, readyCheck: null, session: null, queueId: 420 };
+const S = { phase: 'Lobby', lobby: null, search: null, readyCheck: null, session: null, queueId: 420, invites: [] };
 let timers = [];
 const later = (fn, t) => { const h = setTimeout(fn, t); timers.push(h); return h; };
 const clearAll = () => { timers.forEach(clearTimeout); timers = []; clearInterval(S.tick); };
@@ -46,6 +46,9 @@ const URIS = {
   search: '/lol-matchmaking/v1/search',
   readyCheck: '/lol-matchmaking/v1/ready-check',
   session: '/lol-champ-select/v1/session',
+  invites: '/lol-lobby/v2/received-invitations',
+  runePages: '/lol-perks/v1/pages',
+  runeCurrent: '/lol-perks/v1/currentpage',
 };
 
 function set(key, value) {
@@ -54,20 +57,118 @@ function set(key, value) {
 }
 function touchSession() { emit(URIS.session, S.session); }
 
-function makeLobby(queueId) {
+// ---- party ------------------------------------------------------------------
+const FRIENDS = [
+  { summonerId: 2001, puuid: 'f1', gameName: 'Juniper', gameTag: 'EUW', icon: 7, availability: 'chat', status: 'outOfGame' },
+  { summonerId: 2002, puuid: 'f2', gameName: 'Marrow', gameTag: 'NA1', icon: 12, availability: 'chat', status: 'outOfGame' },
+  { summonerId: 2003, puuid: 'f3', gameName: 'Lumen', gameTag: 'OCE', icon: 15, availability: 'chat', status: 'outOfGame' },
+  { summonerId: 2004, puuid: 'f4', gameName: 'Quill', gameTag: 'EUW', icon: 20, availability: 'away', status: 'outOfGame' },
+  { summonerId: 2005, puuid: 'f5', gameName: 'Thistle', gameTag: 'NA1', icon: 23, availability: 'dnd', status: 'championSelect' },
+  { summonerId: 2006, puuid: 'f6', gameName: 'Saffron', gameTag: 'KR', icon: 25, availability: 'dnd', status: 'inGame' },
+  { summonerId: 2007, puuid: 'f7', gameName: 'Wren', gameTag: 'EUW', icon: 3, availability: 'mobile', status: '' },
+  { summonerId: 2008, puuid: 'f8', gameName: 'Corvid', gameTag: 'NA1', icon: 9, availability: 'offline', status: '' },
+];
+const ROLES = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY'];
+const POSITION_QUEUES = [400, 420, 440];
+const mkMember = (f, leader) => ({
+  summonerId: f.summonerId, puuid: f.puuid, gameName: f.gameName, gameTag: f.gameTag, summonerIconId: f.icon,
+  isLeader: leader, firstPositionPreference: 'UNSELECTED', secondPositionPreference: 'UNSELECTED',
+});
+const ME_INFO = { summonerId: 1001, puuid: 'me', gameName: 'Hover Tester', gameTag: 'MOCK', icon: 4 };
+const P = { members: [mkMember(ME_INFO, true)], invitations: [] };
+const meMember = () => P.members.find((m) => m.puuid === 'me');
+const resetParty = () => { P.members = [mkMember(ME_INFO, true)]; P.invitations = []; };
+
+function lobbyView() {
+  const positions = POSITION_QUEUES.includes(S.queueId);
+  const me = meMember();
+  const rolesOk = !positions || P.members.every((m) => m.firstPositionPreference === 'FILL' || (m.firstPositionPreference !== 'UNSELECTED' && m.secondPositionPreference !== 'UNSELECTED'));
   return {
-    canStartActivity: true, partyId: 'mock-party',
-    gameConfig: { queueId, gameMode: queueId === 450 ? 'ARAM' : 'CLASSIC' },
-    localMember: { isLeader: true, puuid: 'me' },
-    members: [{ puuid: 'me', isLeader: true }],
+    canStartActivity: me.isLeader && rolesOk, partyId: 'mock-party',
+    gameConfig: { queueId: S.queueId, gameMode: S.queueId === 450 ? 'ARAM' : 'CLASSIC', showPositionSelector: positions, maxLobbySize: 5 },
+    localMember: me, members: P.members, invitations: P.invitations,
   };
+}
+const touchLobby = () => S.phase === 'Lobby' && set('lobby', lobbyView());
+
+// Friends pick roles you haven't taken, like a polite party would.
+function botRoles(m) {
+  const used = new Set(P.members.filter((x) => x !== m).map((x) => x.firstPositionPreference));
+  const free = ROLES.filter((r) => !used.has(r));
+  m.firstPositionPreference = free[0] || 'FILL';
+  m.secondPositionPreference = free[1] || (m.firstPositionPreference === 'FILL' ? 'UNSELECTED' : 'FILL');
+}
+
+function invite(toSummonerId) {
+  const f = FRIENDS.find((x) => x.summonerId === toSummonerId);
+  if (!f) return 'Not on your friends list';
+  if (P.members.some((m) => m.summonerId === toSummonerId)) return 'Already in your party';
+  if (P.members.length + P.invitations.length >= 5) return 'Your party is full';
+  if (P.invitations.some((i) => i.toSummonerId === toSummonerId)) return null;
+  const inv = { invitationId: `inv-${toSummonerId}`, toSummonerId, toSummonerName: f.gameName, state: 'Pending' };
+  P.invitations.push(inv);
+  touchLobby();
+  const free = f.availability === 'chat' && f.status === 'outOfGame';
+  setTimeout(() => {
+    if (!P.invitations.includes(inv) || S.phase !== 'Lobby') return;
+    if (free) {
+      P.invitations = P.invitations.filter((i) => i !== inv);
+      const m = mkMember(f, false);
+      P.members.push(m);
+      if (POSITION_QUEUES.includes(S.queueId)) botRoles(m);
+    } else {
+      inv.state = 'Declined';
+      setTimeout(() => { P.invitations = P.invitations.filter((i) => i !== inv); touchLobby(); }, ms(2));
+    }
+    touchLobby();
+  }, between(2, 4));
+  return null;
+}
+
+// After you leave a lobby, a friend sometimes asks you to join theirs.
+function maybeIncomingInvite() {
+  setTimeout(() => {
+    if (S.phase !== 'None' || S.invites.length) return;
+    const f = FRIENDS[0];
+    set('invites', [{ invitationId: 'rx-juniper', fromSummonerId: f.summonerId, fromSummonerName: f.gameName, state: 'Pending', gameConfig: { queueId: 450 } }]);
+  }, ms(5));
 }
 
 function toLobby() {
   clearAll();
   set('search', null); set('readyCheck', null); set('session', null);
-  set('lobby', makeLobby(S.queueId));
+  S.phase = 'Lobby';
+  set('lobby', lobbyView());
   set('phase', 'Lobby');
+  // A friend who leads the party starts the queue on their own.
+  if (!meMember().isLeader) later(() => S.phase === 'Lobby' && !meMember().isLeader && startSearch(), ms(8));
+}
+
+// ---- runes ------------------------------------------------------------------
+let styles = [];
+let perkNames = new Map();
+const R = { pages: [], current: null, nextId: 200 };
+const styleOf = (perkId) => styles.find((s) => s.slots.some((sl) => sl.type !== 'kStatMod' && sl.perks.includes(perkId)));
+const pageView = (p) => ({ ...p, isActive: p.id === R.current, current: p.id === R.current, isValid: true, isDeletable: p.isEditable });
+function touchRunes() {
+  set('runePages', R.pages.map(pageView));
+  const cur = R.pages.find((p) => p.id === R.current);
+  set('runeCurrent', cur ? pageView(cur) : null);
+}
+function seedRunes() {
+  const fromDefaults = (id, name, styleId, editable) => {
+    const st = styles.find((s) => s.id === styleId);
+    if (!st) return null;
+    return { id, name, primaryStyleId: st.id, subStyleId: styleOf(st.defaultPerks[4])?.id ?? st.allowedSubStyles[0], selectedPerkIds: [...st.defaultPerks], isEditable: editable };
+  };
+  const named = (styleId) => perkNames.get(styles.find((s) => s.id === styleId)?.defaultPerks[0]) || 'Runes';
+  R.pages = [
+    fromDefaults(101, `Mid · ${named(8100)}`, 8100, true),
+    fromDefaults(102, `Top · ${named(8000)}`, 8000, true),
+    fromDefaults(103, `Tank · ${named(8400)}`, 8400, true),
+    fromDefaults(50, `Recommended · ${named(8200)}`, 8200, false),
+  ].filter(Boolean);
+  R.current = R.pages[0]?.id ?? null;
 }
 
 function startSearch() {
@@ -123,13 +224,20 @@ function startChampSelect() {
   clearAll();
   set('readyCheck', null); set('search', null);
   const aram = S.queueId === 450;
+  // Your first role (if you picked one) is where you land; everyone else fills around you.
+  const want = meMember().firstPositionPreference.toLowerCase();
+  const mine = POS.includes(want) ? want : 'middle';
+  const lanes = POS.filter((p) => p !== mine);
+  lanes.splice(ME, 0, mine);
+  const friends = P.members.filter((m) => m.puuid !== 'me').map((m) => m.gameName);
+  const allyName = (cell) => (cell === ME ? ME_INFO.gameName : friends.shift() || ALLY_NAMES[cell]);
   const mk = (cell) => {
     const ally = cell < 5;
-    const pos = ally && !aram ? POS[cell] : '';
-    const spells = aram ? [4, 32] : DEFAULT_SPELLS[POS[cell % 5]];
+    const pos = !aram ? lanes[cell % 5] : '';
+    const spells = aram ? [4, 32] : DEFAULT_SPELLS[lanes[cell % 5]];
     return {
-      cellId: cell, team: ally ? 1 : 2, assignedPosition: pos, championId: 0, championPickIntent: 0,
-      spell1Id: spells[0], spell2Id: spells[1], gameName: ally ? ALLY_NAMES[cell] : '', puuid: `p${cell}`,
+      cellId: cell, team: ally ? 1 : 2, assignedPosition: ally ? pos : '', championId: 0, championPickIntent: 0,
+      spell1Id: spells[0], spell2Id: spells[1], gameName: ally ? allyName(cell) : '', puuid: cell === ME ? 'me' : `p${cell}`,
     };
   };
   let id = 1;
@@ -302,18 +410,119 @@ const server = http.createServer(async (req, res) => {
 
   if (m === 'DELETE' && p === URIS.lobby) {
     clearAll();
+    resetParty();
     set('search', null); set('readyCheck', null); set('session', null); set('lobby', null);
     set('phase', 'None');
+    maybeIncomingInvite();
     return reply(res, 204);
   }
   if (m === 'POST' && p === URIS.lobby) {
     const { queueId } = await body(req);
+    if (S.phase !== 'Lobby') resetParty(); // a fresh lobby; changing mode keeps your party
+    else if (!meMember().isLeader) return err(res, 400, 'Only the party leader can change mode');
     S.queueId = queueId || 420;
+    if (POSITION_QUEUES.includes(S.queueId)) for (const mm of P.members) if (mm.puuid !== 'me' && mm.firstPositionPreference === 'UNSELECTED') botRoles(mm);
     toLobby();
     return reply(res, 200, S.lobby);
   }
+
+  // Party
+  if (m === 'GET' && p === '/lol-chat/v1/friends') {
+    const inParty = new Set(P.members.map((x) => x.summonerId));
+    return reply(res, 200, FRIENDS.map((f) => ({
+      summonerId: f.summonerId, puuid: f.puuid, gameName: f.gameName, gameTag: f.gameTag, name: f.gameName, icon: f.icon,
+      availability: inParty.has(f.summonerId) ? 'chat' : f.availability, lol: { gameStatus: inParty.has(f.summonerId) ? 'hosting_NORMAL' : f.status },
+    })));
+  }
+  if (m === 'POST' && p === '/lol-lobby/v2/lobby/invitations') {
+    if (S.phase !== 'Lobby') return err(res, 400, 'Not in a lobby');
+    const list = await body(req);
+    for (const i of Array.isArray(list) ? list : []) { const e = invite(i.toSummonerId); if (e) return err(res, 400, e); }
+    return reply(res, 200, P.invitations);
+  }
+  const memberMatch = p.match(/^\/lol-lobby\/v2\/lobby\/members\/(\d+)\/(kick|promote)$/);
+  if (m === 'POST' && memberMatch) {
+    if (!meMember().isLeader) return err(res, 400, 'Only the party leader can do that');
+    const target = P.members.find((x) => x.summonerId === Number(memberMatch[1]));
+    if (!target || target.puuid === 'me') return err(res, 400, 'Not in your party');
+    if (memberMatch[2] === 'kick') P.members = P.members.filter((x) => x !== target);
+    else { for (const x of P.members) x.isLeader = x === target; later(() => S.phase === 'Lobby' && !meMember().isLeader && startSearch(), ms(8)); }
+    touchLobby();
+    return reply(res, 204);
+  }
+  if (m === 'PUT' && p === '/lol-lobby/v2/lobby/members/localMember/position-preferences') {
+    const { firstPreference, secondPreference } = await body(req);
+    const me = meMember();
+    me.firstPositionPreference = firstPreference;
+    me.secondPositionPreference = firstPreference === 'FILL' ? 'UNSELECTED' : secondPreference;
+    touchLobby();
+    return reply(res, 201);
+  }
+  if (m === 'GET' && p === URIS.invites) return reply(res, 200, S.invites);
+  const rxMatch = p.match(/^\/lol-lobby\/v2\/received-invitations\/([\w.:-]+)\/(accept|decline)$/);
+  if (m === 'POST' && rxMatch) {
+    const inv = S.invites.find((i) => i.invitationId === rxMatch[1]);
+    if (!inv) return err(res, 404, 'Invitation not found');
+    set('invites', []);
+    if (rxMatch[2] === 'accept') {
+      const f = FRIENDS.find((x) => x.summonerId === inv.fromSummonerId);
+      P.members = [mkMember(f, true), mkMember(ME_INFO, false)];
+      P.invitations = [];
+      S.queueId = inv.gameConfig.queueId;
+      toLobby();
+    }
+    return reply(res, 204);
+  }
+
+  // Runes
+  if (m === 'GET' && p === URIS.runePages) return reply(res, 200, R.pages.map(pageView));
+  if (m === 'GET' && p === URIS.runeCurrent) {
+    const cur = R.pages.find((x) => x.id === R.current);
+    return cur ? reply(res, 200, pageView(cur)) : err(res, 404, 'No current page');
+  }
+  if (m === 'PUT' && p === URIS.runeCurrent) {
+    const id = Number(await body(req));
+    if (!R.pages.some((x) => x.id === id)) return err(res, 404, 'Page not found');
+    R.current = id;
+    touchRunes();
+    return reply(res, 204);
+  }
+  if (m === 'POST' && p === URIS.runePages) {
+    if (R.pages.filter((x) => x.isEditable).length >= 5) return err(res, 400, 'You’ve used all your rune pages. Delete one first.');
+    const b = await body(req);
+    if (!Array.isArray(b.selectedPerkIds) || b.selectedPerkIds.length !== 9) return err(res, 400, 'Invalid page');
+    const page = { id: R.nextId++, name: b.name, primaryStyleId: b.primaryStyleId, subStyleId: b.subStyleId, selectedPerkIds: b.selectedPerkIds, isEditable: true };
+    R.pages.unshift(page);
+    if (b.current) R.current = page.id;
+    touchRunes();
+    return reply(res, 200, pageView(page));
+  }
+  const pageMatch = p.match(/^\/lol-perks\/v1\/pages\/(\d+)$/);
+  if (pageMatch) {
+    const page = R.pages.find((x) => x.id === Number(pageMatch[1]));
+    if (!page) return err(res, 404, 'Page not found');
+    if (!page.isEditable) return err(res, 400, 'Page is not editable');
+    if (m === 'PUT') {
+      const b = await body(req);
+      Object.assign(page, { name: b.name, primaryStyleId: b.primaryStyleId, subStyleId: b.subStyleId, selectedPerkIds: b.selectedPerkIds });
+      touchRunes();
+      return reply(res, 201, pageView(page));
+    }
+    if (m === 'DELETE') {
+      R.pages = R.pages.filter((x) => x !== page);
+      if (R.current === page.id) R.current = R.pages[0]?.id ?? null;
+      touchRunes();
+      return reply(res, 204);
+    }
+  }
+
   if (p === '/lol-lobby/v2/lobby/matchmaking/search') {
-    if (m === 'POST') { if (S.phase !== 'Lobby') return err(res, 400, 'Not in a lobby'); startSearch(); return reply(res, 204); }
+    if (m === 'POST') {
+      if (S.phase !== 'Lobby') return err(res, 400, 'Not in a lobby');
+      if (!lobbyView().canStartActivity) return err(res, 400, meMember().isLeader ? 'Everyone needs to pick roles first' : 'Only the party leader can start the queue');
+      startSearch();
+      return reply(res, 204);
+    }
     if (m === 'DELETE') { toLobby(); return reply(res, 204); }
   }
   if (m === 'POST' && p === '/lol-matchmaking/v1/ready-check/accept') {
@@ -390,7 +599,14 @@ function emit(uri, data) {
 // ---- boot -------------------------------------------------------------------
 const summary = await fetchAsset('/lol-game-data/assets/v1/champion-summary.json').catch(() => null);
 champIds = summary ? JSON.parse(summary.body).map((c) => c.id).filter((id) => id > 0 && id < 10000) : [1, 22, 51, 64, 103, 157, 222, 266, 412, 777];
-S.lobby = makeLobby(S.queueId);
+const [stylesRaw, perksRaw] = await Promise.all([
+  fetchAsset('/lol-game-data/assets/v1/perkstyles.json').catch(() => null),
+  fetchAsset('/lol-game-data/assets/v1/perks.json').catch(() => null),
+]);
+try { styles = JSON.parse(stylesRaw.body).styles; } catch { styles = []; }
+try { perkNames = new Map(JSON.parse(perksRaw.body).map((x) => [x.id, x.name])); } catch {}
+seedRunes();
+S.lobby = lobbyView();
 
 server.listen(PORT, '127.0.0.1', () => {
   fs.writeFileSync(LOCKFILE, `LeagueClient:${process.pid}:${PORT}:${PASS}:http`);

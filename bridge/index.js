@@ -197,8 +197,9 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     try {
-      await client.command(msg);
-      ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: true }));
+      const out = await client.command(msg);
+      // Only read commands hand data back; everything else is just ok/error.
+      ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: true, ...(msg.type === 'friends' ? { data: out } : {}) }));
     } catch (err) {
       ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: err.message }));
     }
