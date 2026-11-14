@@ -83,14 +83,23 @@ const POSITIONS = { top: 'Top', jungle: 'Jungle', middle: 'Mid', bottom: 'Bot', 
 const clock = (sec) => { const s = Math.max(0, Math.floor(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const cx = (...c) => c.filter(Boolean).join(' ');
 
-// Art and a one-line pitch for each queue on the mode list.
-const QUEUE_LOOK = {
-  420: { champ: 266, blurb: 'Climb alone or with one friend' },
-  440: { champ: 99, blurb: 'Ranked with a group of up to five' },
-  400: { champ: 103, blurb: 'Bans and picks, no rank on the line' },
-  490: { champ: 81, blurb: 'Choose roles and champions, then go' },
-  450: { champ: 222, blurb: 'One lane, random champions' },
+// One-line pitch for each queue on the Play screen.
+const QUEUE_BLURB = {
+  490: 'Choose roles and champions, then go',
+  400: 'Bans and picks, no rank on the line',
+  420: 'Climb alone or with one friend',
+  440: 'Ranked with a group of up to five',
+  450: 'One lane, random champions',
 };
+// Maps, as the client groups them. Art comes from the client's own game-mode assets.
+const GM = '/lol-game-data/assets/content/src/LeagueClient/GameModeAssets';
+const MAPS = [
+  { key: 'sr', name: 'Summoner’s Rift', place: 'Summoner’s Rift', sub: '5v5', queues: [490, 400, 420, 440],
+    bg: `${GM}/Classic_SRU/img/parties-background.jpg`, icon: `${GM}/Classic_SRU/img/game-select-icon-active.png` },
+  { key: 'ha', name: 'ARAM', place: 'Howling Abyss', sub: 'Howling Abyss', queues: [450],
+    bg: `${GM}/ARAM/img/parties-background.jpg`, icon: `${GM}/ARAM/img/game-select-icon-active.png` },
+];
+const mapOf = (qid) => MAPS.find((m) => m.queues.includes(qid)) || MAPS[0];
 const ROLES = [['', 'All'], ['assassin', 'Assassin'], ['fighter', 'Fighter'], ['mage', 'Mage'], ['marksman', 'Marksman'], ['support', 'Support'], ['tank', 'Tank']];
 
 function useTicker(ms = 200) {
@@ -110,30 +119,6 @@ function useTitle(id) {
     fetch(`/api/champion?id=${id}`).then((r) => (r.ok ? r.json() : null)).then((d) => { titles.set(id, d?.title || ''); f((n) => n + 1); }).catch(() => {});
   }, [id]);
   return titles.get(id) || '';
-}
-
-// A slowly rotating champion for the start screen.
-function useFeatured(on) {
-  const [id, setId] = useState(0);
-  const list = store.data?.list;
-  useEffect(() => {
-    if (!on || !list?.length) return;
-    // Only switch once the next splash is decoded, so the art and its caption change together.
-    let live = true, timer;
-    const cycle = (delay) => {
-      const next = list[Math.floor(Math.random() * list.length)].id;
-      const img = new Image();
-      img.src = art(next);
-      Promise.all([img.decode().catch(() => {}), new Promise((r) => (timer = setTimeout(r, delay)))]).then(() => {
-        if (!live) return;
-        if (img.naturalWidth) setId(next);
-        cycle(9000);
-      });
-    };
-    cycle(id ? 9000 : 0);
-    return () => { live = false; clearTimeout(timer); };
-  }, [on, list]);
-  return id;
 }
 
 // Audio: unlocked on first touch so the queue-pop chime can play later.
@@ -173,14 +158,19 @@ const Logo = () => html`
     <span class="logo-word">Hover</span>
   </span>`;
 
+// Thin gold rule with a diamond in the middle.
+const Rule = () => html`<div class="hx-rule" aria-hidden="true"><i /></div>`;
+
+// Drifting embers over the map art.
+const Embers = () => html`<div class="embers" aria-hidden="true">${Array.from({ length: 14 }, (_, i) => html`<i key=${i} style=${{ '--x': `${(i * 37) % 100}%`, '--d': `${9 + (i * 7) % 8}s`, '--t': `${-(i * 1.3)}s`, '--s': `${2 + (i % 3)}px` }} />`)}</div>`;
+
 // ---------------------------------------------------------------------------
-// Backdrop: full-bleed splash art that cross-fades between scenes
+// Backdrop: full-bleed map or splash art that cross-fades between scenes
 // ---------------------------------------------------------------------------
-function Backdrop({ id, tone }) {
+function Backdrop({ src, tone }) {
   const [layers, setLayers] = useState([]);
   useEffect(() => {
-    if (!(id > 0)) return;
-    const src = art(id);
+    if (!src) return;
     let live = true;
     const img = new Image();
     img.src = src;
@@ -189,12 +179,14 @@ function Backdrop({ id, tone }) {
       setLayers((ls) => (ls.at(-1)?.src === src ? ls : [...ls.slice(-1), { src, key: `${src}#${Date.now()}` }]));
     });
     return () => { live = false; };
-  }, [id]);
+  }, [src]);
+  const map = ['home', 'lobby', 'queue', 'ready', 'calm'].includes(tone);
   return html`
     <div class=${'backdrop tone-' + tone} aria-hidden="true">
       <div class="aurora"><i /><i /><i /></div>
       ${layers.map((l, i) => html`<img key=${l.key} class=${cx('bd-img', i === layers.length - 1 && 'top')} src=${l.src} alt="" />`)}
       <div class="bd-shade" />
+      ${map && html`<${Embers} />`}
       <div class="bd-grain" />
     </div>`;
 }
@@ -207,25 +199,26 @@ function rememberPick(id) {
   lastPick = id;
   try { sessionStorage.setItem('hover.lastPick', String(id)); } catch {}
 }
-const queueChamp = (qid) => QUEUE_LOOK[qid]?.champ || 0;
-function scene(st, featured) {
+// The map is the backdrop everywhere outside champ select; there, your champion takes over.
+function scene(st) {
   const s = st.state;
-  if (st.link !== 'open' || !s?.lcu || !st.data) return { id: 0, tone: 'calm' };
-  const q = queueChamp(s.lobby?.queueId);
+  if (st.link !== 'open' || !s?.lcu) return { src: '', tone: 'calm' };
+  const rift = asset(mapOf(s.lobby?.queueId).bg);
   switch (s.phase) {
-    case 'Lobby': return { id: q || featured, tone: 'lobby' };
-    case 'Matchmaking': return { id: q || featured, tone: 'queue' };
-    case 'ReadyCheck': return { id: q || featured, tone: 'ready' };
+    case 'Lobby': return { src: rift, tone: 'lobby' };
+    case 'Matchmaking': return { src: rift, tone: 'queue' };
+    case 'ReadyCheck': return { src: rift, tone: 'ready' };
     case 'ChampSelect': {
-      if (!s.session) return { id: lastPick || q, tone: 'draft' };
+      if (!s.session || !st.data) return { src: lastPick ? art(lastPick) : rift, tone: 'draft' };
       const d = deriveDraft(s);
       const banning = d.current?.type === 'ban';
       const id = d.selected || d.me.championId || 0;
       if (!banning && d.me.championId) rememberPick(d.me.championId);
-      return { id: id || lastPick || q, tone: banning ? 'ban' : d.pickDone ? 'locked' : 'draft' };
+      const champ = id || lastPick;
+      return { src: champ ? art(champ) : rift, tone: banning ? 'ban' : d.pickDone ? 'locked' : 'draft' };
     }
-    case 'GameStart': case 'InProgress': case 'Reconnect': return { id: lastPick || featured, tone: 'hero' };
-    default: return { id: featured, tone: 'home' };
+    case 'GameStart': case 'InProgress': case 'Reconnect': return { src: lastPick ? art(lastPick) : rift, tone: lastPick ? 'hero' : 'home' };
+    default: return { src: asset(MAPS[0].bg), tone: 'home' };
   }
 }
 
@@ -236,19 +229,18 @@ function App() {
   const st = useStore();
   const { link, state } = st;
   const homeish = link === 'open' && state?.lcu && !['Lobby', 'Matchmaking', 'ReadyCheck', 'ChampSelect', 'GameStart', 'InProgress', 'Reconnect'].includes(state.phase);
-  const featured = useFeatured(homeish);
-  const sc = scene(st, featured);
+  const sc = scene(st);
 
   let screen;
   if (link === 'unpaired') screen = html`<${Pair} />`;
   else if (link === 'connecting' || (link === 'open' && !state)) screen = html`<${Splash} />`;
   else if (link !== 'open') screen = html`<${Message} eyebrow="Offline" title="Can’t reach your computer" body="Make sure Hover is running there and your phone is on the same Wi‑Fi." waiting="Retrying" />`;
   else if (!state.lcu) screen = html`<${Message} eyebrow="Connected to Hover" title="Open League on your computer" body="Hover picks up the client as soon as it starts." waiting="Waiting for the client" />`;
-  else if (homeish) screen = html`<${Home} s=${state} featured=${featured} />`;
+  else if (homeish) screen = html`<${Home} s=${state} />`;
   else screen = phaseScreen(state);
 
   return html`
-    <${Backdrop} id=${sc.id} tone=${sc.tone} />
+    <${Backdrop} src=${sc.src} tone=${sc.tone} />
     ${screen}
     ${st.toast && html`<div class="toast" key=${st.toast.key} role="status">${st.toast.text}</div>`}
   `;
@@ -325,17 +317,16 @@ function Pair() {
           <p class="error" aria-live="polite">${error}</p>
         </form>
       </div>
-      <footer class="dock"><button class="btn gold" disabled=${busy || digits.length !== 6} onClick=${() => submit()}>${busy ? 'Pairing…' : 'Pair this phone'}</button></footer>
+      <footer class="dock"><button class="btn hex" disabled=${busy || digits.length !== 6} onClick=${() => submit()}>${busy ? 'Pairing…' : 'Pair this phone'}</button></footer>
     </main>`;
 }
 
 // ---------------------------------------------------------------------------
 // Start screen + modes
 // ---------------------------------------------------------------------------
-function Home({ s, featured }) {
+function Home({ s }) {
   const [picking, setPicking] = useState(false);
   const after = ['WaitingForStats', 'PreEndOfGame', 'EndOfGame'].includes(s.phase);
-  const title = useTitle(featured);
   return html`
     <main class="screen home">
       <header class="top-row">
@@ -343,40 +334,70 @@ function Home({ s, featured }) {
         <span class="chip"><i class="dot live" />Client connected</span>
       </header>
       <div class="home-hero">
-        <p class="eyebrow">${after ? 'Game over' : 'Champ select, from your phone'}</p>
-        <h1 class="mega">${after ? html`Good<br />game.` : html`Your next<br />game starts<br />here.`}</h1>
-        <p class="sub">${after ? 'Queue up again whenever you’re ready.' : 'Open a lobby on your computer without getting up.'}</p>
+        <p class="eyebrow">${after ? 'Game over' : 'Welcome, summoner'}</p>
+        <h1 class="mega">${after ? 'Good game' : 'Summoner’s Rift awaits'}</h1>
+        <${Rule} />
+        <p class="sub">${after ? 'Queue up again whenever you’re ready.' : 'Open a lobby, queue and draft from your phone.'}</p>
       </div>
-      ${featured > 0 && html`<p class="credit" key=${featured}><span>${champName(featured)}</span>${title && html` · ${title}`}</p>`}
       <footer class="dock">
-        <button class="btn gold xl" onClick=${() => setPicking(true)}>${Icon.swords}<span>${after ? 'Play again' : 'Play'}</span></button>
+        <button class="btn hex xl" onClick=${() => setPicking(true)}><span>${after ? 'Play again' : 'Play'}</span></button>
       </footer>
-      ${picking && html`
-        <${Sheet} title="Choose a mode" onClose=${() => setPicking(false)}>
-          <${QueueList} onPick=${(queueId) => { setPicking(false); send('createLobby', { queueId }); }} />
-        </${Sheet}>`}
+      ${picking && html`<${ModeSelect} onClose=${() => setPicking(false)} />`}
     </main>`;
 }
 
-function QueueList({ current, onPick }) {
+// The client's Play screen: maps on top, that map's queues underneath, then Confirm.
+function ModeSelect({ current, onClose }) {
   const queues = store.data?.queues || [];
+  const [mapKey, setMapKey] = useState(mapOf(current ?? 420).key);
+  const [qid, setQid] = useState(current ?? null);
+  const [closing, setClosing] = useState(false);
+  const map = MAPS.find((m) => m.key === mapKey);
+  const options = map.queues.map((id) => queues.find((q) => q.id === id)).filter(Boolean);
+  const close = () => { setClosing(true); setTimeout(onClose, 180); };
+  const chooseMap = (m) => {
+    setMapKey(m.key);
+    if (!m.queues.includes(qid)) setQid(m.queues.includes(current) ? current : m.queues.length === 1 ? m.queues[0] : null);
+  };
+  const confirm = () => { if (qid && qid !== current) send('createLobby', { queueId: qid }); close(); };
+  useEffect(() => { const k = (e) => e.key === 'Escape' && close(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
   return html`
-    <ul class="modes">
-      ${queues.map((q, i) => {
-        const look = QUEUE_LOOK[q.id] || {};
-        return html`
-          <li key=${q.id} style=${{ animationDelay: `${i * 40}ms` }}>
-            <button class=${cx('mode', q.id === current && 'on')} onClick=${() => onPick(q.id)}>
-              ${look.champ && html`<img class="mode-art" src=${art(look.champ)} alt="" loading="lazy" />`}
-              <span class="mode-text">
-                <span class="mode-name">${q.name}</span>
-                <span class="mode-blurb">${q.id === current ? 'Current mode' : look.blurb || ''}</span>
-              </span>
-              <span class="mode-go">${Icon.arrow}</span>
-            </button>
-          </li>`;
-      })}
-    </ul>`;
+    <div class=${cx('modesel', closing && 'closing')} role="dialog" aria-label="Play">
+      <header class="top-row">
+        <button class="icon-btn glass" onClick=${close} aria-label="Back">${Icon.back}</button>
+        <h1 class="modesel-title">Play</h1>
+        <span class="top-spacer" />
+      </header>
+
+      <section class="maps" role="radiogroup" aria-label="Map">
+        ${MAPS.map((m) => html`
+          <button key=${m.key} role="radio" aria-checked=${m.key === mapKey} class=${cx('map-card', m.key === mapKey && 'on')} onClick=${() => chooseMap(m)}>
+            <img class="map-art" src=${asset(m.bg)} alt="" />
+            <span class="map-shade" />
+            <img class="map-icon" src=${asset(m.icon)} alt="" />
+            <span class="map-name">${m.name}</span>
+            <span class="map-sub">${m.sub}</span>
+          </button>`)}
+      </section>
+
+      <${Rule} />
+
+      <section class="queues" role="radiogroup" aria-label="Queue">
+        <p class="eyebrow">${map.name}</p>
+        ${options.map((q, i) => html`
+          <button key=${q.id} role="radio" aria-checked=${q.id === qid} class=${cx('queue-opt', q.id === qid && 'on')} style=${{ animationDelay: `${i * 45}ms` }} onClick=${() => setQid(q.id)}>
+            <span class="diamond" />
+            <span class="queue-text">
+              <span class="queue-name">${q.name}</span>
+              <span class="queue-blurb">${q.id === current ? 'Current mode' : QUEUE_BLURB[q.id] || ''}</span>
+            </span>
+          </button>`)}
+      </section>
+
+      <footer class="dock">
+        <button class="btn hex xl" disabled=${!qid} onClick=${confirm}>${qid && qid === current ? 'Keep this mode' : 'Confirm'}</button>
+      </footer>
+    </div>`;
 }
 
 function Lobby({ s }) {
@@ -393,21 +414,20 @@ function Lobby({ s }) {
         <span class="chip">Lobby</span>
       </header>
       <div class="stage">
-        <p class="eyebrow">${leader ? 'Ready to queue' : 'Waiting for the party leader'}</p>
+        <p class="eyebrow">${mapOf(lobby?.queueId).place}</p>
         <h1 class="mega">${s.queueName || 'Lobby'}</h1>
+        <${Rule} />
+        <p class="sub">${leader ? 'Ready when you are.' : 'Waiting for the party leader.'}</p>
         <div class="party" aria-label=${`${members} in party`}>
           ${Array.from({ length: 5 }, (_, i) => html`<span class=${cx('seat', i < members && 'taken', i === 0 && 'you')} />`)}
           <span class="party-text">${members > 1 ? `You and ${members - 1} other${members > 2 ? 's' : ''}` : 'Just you'}</span>
         </div>
       </div>
       <footer class="dock">
-        ${leader && html`<button class="btn gold xl" disabled=${busy || !lobby?.canStart} onClick=${find}>Find match</button>`}
+        ${leader && html`<button class="btn hex xl" disabled=${busy || !lobby?.canStart} onClick=${find}>Find match</button>`}
         ${leader && html`<button class="btn quiet" onClick=${() => setChanging(true)}>Change mode</button>`}
       </footer>
-      ${changing && html`
-        <${Sheet} title="Change mode" onClose=${() => setChanging(false)}>
-          <${QueueList} current=${lobby?.queueId} onPick=${(queueId) => { setChanging(false); if (queueId !== lobby?.queueId) send('createLobby', { queueId }); }} />
-        </${Sheet}>`}
+      ${changing && html`<${ModeSelect} current=${lobby?.queueId} onClose=${() => setChanging(false)} />`}
     </main>`;
 }
 
@@ -540,7 +560,7 @@ function ChampSelect({ s }) {
   let dock;
   const name = champName(selected);
   if (current && banning) dock = html`<button class="btn danger xl" disabled=${!selected || busy} onClick=${lock}>${selected ? `Ban ${name}` : 'Choose a ban'}</button>`;
-  else if (current) dock = html`<button class="btn gold xl" disabled=${!selected || busy} onClick=${lock}>${selected ? `Lock in ${name}` : 'Choose a champion'}</button>`;
+  else if (current) dock = html`<button class="btn hex xl" disabled=${!selected || busy} onClick=${lock}>${selected ? `Lock in ${name}` : 'Choose a champion'}</button>`;
   else if (d.aram && sess.rerolls != null) dock = html`<button class="btn glass" disabled=${!sess.rerolls} onClick=${() => send('reroll')}>${Icon.dice}<span>Reroll</span><span class="count">${sess.rerolls} left</span></button>`;
   else dock = html`<p class="dock-note">${d.pickDone ? (d.phase === 'GAME_STARTING' ? 'Loading in' : 'Locked in. Spells can still change.') : d.phase === 'PLANNING' ? 'Bans start after planning' : 'Waiting for your turn'}</p>`;
 
@@ -612,7 +632,7 @@ function MeCard({ d, selected, banning, onSpell }) {
     <section class=${cx('mecard', d.pickDone && 'locked')}>
       <div class="me-text">
         <p class=${cx('me-status', d.pickDone && 'done')}>${d.pickDone && html`<i class="dot gold" />`}${meStatus(d, banning, selected)}</p>
-        <h2 class="me-name" key=${selected}>${selected > 0 ? champName(selected) : banning ? 'No ban yet' : 'No champion yet'}</h2>
+        <h2 class=${cx('me-name', !(selected > 0) && 'empty')} key=${selected}>${selected > 0 ? champName(selected) : banning ? 'No ban yet' : 'No champion yet'}</h2>
         ${selected > 0 && title && html`<p class="me-title">${title}</p>`}
       </div>
       ${!sess.spectating && html`
