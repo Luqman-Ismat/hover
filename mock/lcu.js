@@ -300,6 +300,12 @@ const server = http.createServer(async (req, res) => {
     return reply(res, 200, champIds.filter((c) => !banned.has(c) && !(lockedPicks.has(c) && p.includes('pickable'))));
   }
 
+  if (m === 'DELETE' && p === URIS.lobby) {
+    clearAll();
+    set('search', null); set('readyCheck', null); set('session', null); set('lobby', null);
+    set('phase', 'None');
+    return reply(res, 204);
+  }
   if (m === 'POST' && p === URIS.lobby) {
     const { queueId } = await body(req);
     S.queueId = queueId || 420;

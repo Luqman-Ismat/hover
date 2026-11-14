@@ -64,7 +64,7 @@ export class ClientState extends EventEmitter {
         this.data = {
           champions: champs
             .filter((c) => c.id > 0 && c.id < 10000) // 6xxxx = mode-specific duplicates
-            .map((c) => ({ id: c.id, name: c.name, alias: c.alias, icon: c.squarePortraitPath }))
+            .map((c) => ({ id: c.id, name: c.name, alias: c.alias, icon: c.squarePortraitPath, roles: c.roles || [] }))
             .sort((a, b) => a.name.localeCompare(b.name)),
           spells: spells
             .filter((s) => s.id > 0 && s.id < 100 && s.gameModes?.length)
@@ -211,6 +211,7 @@ export class ClientState extends EventEmitter {
         if (!QUEUES.some((q) => q.id === queueId)) throw new Error('Unknown queue');
         return this.#call('POST', '/lol-lobby/v2/lobby', { queueId });
       }
+      case 'leaveLobby': return this.#call('DELETE', '/lol-lobby/v2/lobby');
       case 'search': return this.#call('POST', '/lol-lobby/v2/lobby/matchmaking/search');
       case 'cancelSearch': return this.#call('DELETE', '/lol-lobby/v2/lobby/matchmaking/search');
       case 'accept': return this.#call('POST', '/lol-matchmaking/v1/ready-check/accept');

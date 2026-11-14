@@ -67,7 +67,37 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const STATIC = {
   '/vendor/preact.js': path.join(ROOT, 'node_modules/htm/preact/standalone.mjs'),
 };
+// Client assets (icons, splash art), kept in memory up to a byte budget. Oldest go first.
 const assetCache = new Map();
+const ASSET_BUDGET = 96 * 1024 * 1024;
+let assetBytes = 0;
+async function getAsset(ap) {
+  let hit = assetCache.get(ap);
+  if (hit) { assetCache.delete(ap); assetCache.set(ap, hit); return hit; }
+  const r = await client.lcu.asset(ap);
+  if (r.status !== 200) return null;
+  hit = { type: r.type || 'image/png', body: r.body };
+  assetCache.set(ap, hit);
+  assetBytes += hit.body.length;
+  for (const [k, v] of assetCache) {
+    if (assetBytes <= ASSET_BUDGET) break;
+    assetCache.delete(k); assetBytes -= v.body.length;
+  }
+  return hit;
+}
+
+// Per-champion art paths + title, from the client's champion detail file.
+const champInfo = new Map();
+async function getChampInfo(id) {
+  if (champInfo.has(id)) return champInfo.get(id);
+  const d = await client.lcu.get(`/lol-game-data/assets/v1/champions/${id}.json`).catch(() => null);
+  const base = d?.skins?.find((s) => s.isBase) || d?.skins?.[0];
+  if (!base) return null;
+  const info = { id, title: d.title || '', splash: base.splashPath, wide: base.uncenteredSplashPath, tile: base.tilePath };
+  champInfo.set(id, info);
+  return info;
+}
+const ART = { splash: 'splash', wide: 'wide', tile: 'tile' };
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'Cache-Control': 'no-store', ...headers });
@@ -108,15 +138,32 @@ const server = http.createServer(async (req, res) => {
       if (!authed(req)) return send(res, 401, '');
       const ap = url.searchParams.get('p') || '';
       if (!ap.startsWith('/lol-game-data/assets/') || ap.includes('..')) return send(res, 400, '');
-      let hit = assetCache.get(ap);
-      if (!hit) {
-        const r = await client.lcu.asset(ap);
-        if (r.status !== 200) return send(res, 404, '');
-        hit = { type: r.type || 'image/png', body: r.body };
-        if (assetCache.size > 600) assetCache.clear();
-        assetCache.set(ap, hit);
-      }
+      const hit = await getAsset(ap);
+      if (!hit) return send(res, 404, '');
       return send(res, 200, hit.body, { 'Content-Type': hit.type, 'Cache-Control': 'private, max-age=86400' });
+    }
+
+    // /art?id=103&k=splash|wide|tile : champion splash art, resolved by the bridge.
+    if (p === '/art') {
+      if (!authed(req)) return send(res, 401, '');
+      const id = Number(url.searchParams.get('id'));
+      const key = ART[url.searchParams.get('k')] || 'splash';
+      if (!Number.isInteger(id) || id <= 0 || id >= 10000) return send(res, 400, '');
+      const info = await getChampInfo(id);
+      const ap = info?.[key];
+      if (!ap?.startsWith('/lol-game-data/assets/') || ap.includes('..')) return send(res, 404, '');
+      const hit = await getAsset(ap);
+      if (!hit) return send(res, 404, '');
+      return send(res, 200, hit.body, { 'Content-Type': hit.type, 'Cache-Control': 'private, max-age=86400' });
+    }
+
+    // /api/champion?id=103 : { title } for the hero card.
+    if (p === '/api/champion') {
+      if (!authed(req)) return json(res, 401, {});
+      const id = Number(url.searchParams.get('id'));
+      if (!Number.isInteger(id) || id <= 0 || id >= 10000) return json(res, 400, {});
+      const info = await getChampInfo(id);
+      return info ? json(res, 200, { id, title: info.title }, { 'Cache-Control': 'private, max-age=86400' }) : json(res, 404, {});
     }
 
     if (req.method !== 'GET') return send(res, 405, '');

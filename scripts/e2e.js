@@ -71,6 +71,19 @@ try {
   assert.equal((await fetch(`${base}/asset?p=${encodeURIComponent('/lol-summoner/v1/current-summoner')}`, { headers: { cookie } })).status, 400);
   ok('asset proxy serves icons to paired devices only, and only game-data paths');
 
+  assert.ok(data.champions.some((c) => c.roles?.length), 'champion roles');
+  const champ = data.champions.find((c) => c.alias === 'Ahri') || data.champions[0];
+  for (const k of ['splash', 'tile']) {
+    const art = await fetch(`${base}/art?id=${champ.id}&k=${k}`, { headers: { cookie } });
+    assert.equal(art.status, 200, `art ${k}`);
+    assert.match(art.headers.get('content-type'), /image/);
+  }
+  assert.equal((await fetch(`${base}/art?id=${champ.id}&k=splash`)).status, 401);
+  assert.equal((await fetch(`${base}/art?id=-1`, { headers: { cookie } })).status, 400);
+  const info = await (await fetch(`${base}/api/champion?id=${champ.id}`, { headers: { cookie } })).json();
+  assert.ok(info.title, 'champion title');
+  ok(`splash art + title for ${champ.name} (“${info.title}”), paired devices only`);
+
   assert.equal((await cmd('rawRequest', { path: '/lol-login/v1/session' })).ok, false);
   ok('unknown commands are rejected');
 
@@ -132,6 +145,13 @@ try {
   assert.ok((await cmd('bench', { championId: benchId })).ok);
   await until(() => me().championId === benchId, 'bench swap');
   ok('ARAM: rerolled and swapped from the bench');
+
+  await until((s) => s.phase === 'Lobby', 'back to lobby after ARAM');
+  assert.ok((await cmd('leaveLobby')).ok);
+  await until((s) => s.phase === 'None' && !s.lobby, 'left lobby');
+  assert.ok((await cmd('createLobby', { queueId: 420 })).ok);
+  await until((s) => s.phase === 'Lobby' && s.lobby?.queueId === 420, 'new lobby');
+  ok('left the lobby and opened a new one');
 
   console.log('\nAll checks passed.');
   clearTimeout(timeout);
