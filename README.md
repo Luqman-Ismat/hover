@@ -9,11 +9,12 @@ iPhone (Safari / home‑screen app)  ⇄  Wi‑Fi  ⇄  Hover on your computer  
 ## Use it
 
 1. **Get Hover for your computer**: `Hover-mac.zip` or `Hover-windows.zip` (see [Build the apps](#build-the-apps)). Unzip it.
-2. **Double‑click Hover** (`Hover.exe` on Windows). A window opens with a QR code. Keep it open while you play.
-   - **Mac, first time:** if macOS says it can't check the app, right‑click **Hover → Open → Open**. Allow incoming connections when asked.
-   - **Windows, first time:** if SmartScreen appears, click **More info → Run anyway**. When the firewall asks, allow Hover on **private networks**.
-3. **On your iPhone** (same Wi‑Fi), point the Camera at the QR code and open the link. That pairs the phone; you only do it once.
-4. In Safari, tap **Share → Add to Home Screen**. Hover now opens full‑screen like an app.
+   - **Mac:** drag **Hover.app** into Applications and open it. First time only: if macOS says it can't check the app, right‑click **Hover → Open → Open**. Allow incoming connections if asked.
+   - **Windows:** open the **Hover** folder and double‑click **Hover.exe**. First time only: if SmartScreen appears, click **More info → Run anyway**. When the firewall asks, allow Hover on **private networks**.
+2. **A window shows a QR code.** On your iPhone (same Wi‑Fi), point the Camera at it and open the link. That pairs the phone; you only do it once.
+3. In Safari, tap **Share → Add to Home Screen**. Hover now opens full‑screen like an app.
+
+**Closing the window doesn't quit Hover.** It keeps running in the **menu bar** (Mac, top right) or the **system tray** (Windows, bottom right; check the **^** arrow). Click the ring icon there to show the QR code again, turn on **Start Hover at login**, or **Quit Hover**. Opening Hover again while it's running just brings the window back.
 
 Start League before or after Hover; it finds the client by itself.
 
@@ -35,21 +36,22 @@ Restart Hover after saving. Tapping a notification opens Hover.
 
 ## Build the apps
 
-On a Mac with Node 25.5 or newer:
+Hover's desktop app is built with [Electron](https://www.electronjs.org). On a Mac:
 
 ```bash
 npm install
 npm run build
 ```
 
-That writes `dist/Hover-mac.zip` (one app for Apple Silicon and Intel Macs) and `dist/Hover-windows.zip` (`Hover.exe`). Each is a single file with Node and the phone app built in, so nothing else needs installing. The first build downloads the matching Node runtimes from nodejs.org and checks them against their published checksums.
+That writes `dist/Hover-mac.zip` (`Hover.app`, for Apple Silicon and Intel Macs) and `dist/Hover-windows.zip` (a `Hover` folder with `Hover.exe`). Everything Hover needs is inside, so nothing else has to be installed. The first build downloads Electron for each platform.
 
-The apps aren't signed with an Apple or Microsoft developer certificate, which is why macOS and Windows ask for confirmation the first time.
+The apps aren't signed with an Apple or Microsoft developer certificate, which is why macOS and Windows ask for confirmation the first time. `Hover.exe` uses Electron's default program icon, because setting a custom one from a Mac needs Wine; the tray icon is Hover's own.
 
 ## Develop without League
 
 ```bash
-npm start      # run Hover from source against the real client
+npm run app    # the desktop app (window + menu bar / tray) from source
+npm start      # just the bridge, in a terminal, against the real client
 npm run dev    # mock League client + Hover
 npm test       # end-to-end: pairing, parties, roles, runes, queue, draft, swaps, ARAM, live game
 ```
@@ -62,7 +64,8 @@ The mock (`mock/lcu.js`) simulates the client: friends and invites, a ranked dra
 - `bridge/state.js` mirrors the lobby, party, queue, ready check, champ select, rune pages and live game. It turns phone intents (`hover`, `lock`, `swap`, `runeSave`, …) into client calls. The phone can't send arbitrary endpoints.
 - `bridge/index.js` handles pairing, serves the web app, proxies game art and runs the phone's WebSocket.
 - `web/` is a Preact app with no build step.
-- `scripts/build.js` bundles everything into one executable per platform with Node's single‑executable support.
+- `desktop/main.js` is the desktop app: it runs the bridge, shows the Connect window (QR code, pairing code, League status; only reachable from the computer itself) and keeps Hover in the menu bar or system tray.
+- `scripts/build.js` packages the desktop app for Mac and Windows.
 
 ## Security
 

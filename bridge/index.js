@@ -5,14 +5,15 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import * as sea from 'node:sea';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode-terminal/vendor/QRCode/index.js';
+import QRErrorCorrectLevel from 'qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel.js';
 import { ClientState } from './state.js';
 
-// Packaged builds (Hover.exe / Hover for Mac) carry the web app inside the executable.
-const PACKAGED = !!sea.isSea?.();
-const ROOT = PACKAGED ? '' : path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// The desktop app (desktop/main.js) sets this to hear when Hover is up or failed to start.
+const HOST = globalThis.__hoverHost || null;
 const WEB = path.join(ROOT, 'web');
 const PORT = Number(process.env.HOVER_PORT || 7373);
 const HOME = process.env.HOVER_HOME || path.join(os.homedir(), '.hover');
@@ -134,6 +135,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   try {
+    // The Connect page and its status feed show the pairing code, so only this computer may see them.
+    if (p === '/connect' || p === '/api/status') {
+      if (!isLocal(req)) return send(res, 403, 'Only available on the computer running Hover.');
+      if (p === '/api/status') return json(res, 200, status());
+      return send(res, 200, connectPage(), { 'Content-Type': 'text/html; charset=utf-8' });
+    }
+
     if (p === '/api/session') return json(res, 200, { paired: authed(req) });
 
     if (p === '/api/pair' && req.method === 'POST') {
@@ -187,15 +195,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method !== 'GET') return send(res, 405, '');
     const rel = p === '/' ? 'index.html' : p.slice(1);
-    let body;
-    if (PACKAGED) {
-      // Only names that were embedded at build time can be served.
-      try { body = Buffer.from(sea.getAsset(rel)); } catch { body = null; }
-    } else {
-      const file = STATIC[p] || path.join(WEB, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
-      if (!STATIC[p] && !file.startsWith(WEB)) return send(res, 403, '');
-      body = await fs.promises.readFile(file).catch(() => null);
-    }
+    const file = STATIC[p] || path.join(WEB, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
+    if (!STATIC[p] && !file.startsWith(WEB)) return send(res, 403, '');
+    const body = await fs.promises.readFile(file).catch(() => null);
     if (!body) return send(res, 404, 'Not found');
     return send(res, 200, body, { 'Content-Type': TYPES[path.extname(rel)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
   } catch (err) {
@@ -249,6 +251,73 @@ function broadcast(msg) {
 }
 
 // ---- startup ---------------------------------------------------------------
+// ---- connect page (shown by the desktop app) --------------------------------
+const isLocal = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.host || '');
+const phoneUrl = () => `http://${lanAddress()}:${PORT}`;
+const pairUrl = () => `${phoneUrl()}/?code=${pairCode}`;
+function status() {
+  const s = client.snapshot();
+  return { lcu: s.lcu, phase: s.phase, url: phoneUrl(), pairUrl: pairUrl(), code: pairCode, devices: devices.length };
+}
+// QR code as crisp SVG squares.
+function qrSvg(text) {
+  const qr = new QRCode(-1, QRErrorCorrectLevel.M);
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), q = 4; // quiet zone
+  let d = '';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c + q} ${r + q}h1v1h-1z`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n + q * 2} ${n + q * 2}" shape-rendering="crispEdges" role="img" aria-label="QR code to pair your iPhone"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#010a13"/></svg>`;
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function connectPage() {
+  const st = status();
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hover</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body { background: radial-gradient(ellipse at 50% 0%, #0d2a3a, #010a13 70%); color: #f0e6d2; font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; padding: 26px 28px 22px; text-align: center; -webkit-user-select: none; user-select: none; }
+  h1 { font: 700 20px/1 Georgia, serif; letter-spacing: .22em; color: #c8aa6e; display: flex; align-items: center; gap: 10px; }
+  .status { margin-top: 14px; display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid rgba(200,170,110,.35); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: #a09b8c; }
+  .dot { width: 7px; height: 7px; transform: rotate(45deg); background: #5b5a56; }
+  .on .dot { background: #0ac8b9; box-shadow: 0 0 8px #0ac8b9; }
+  .qr { margin-top: 22px; width: 240px; height: 240px; padding: 10px; background: #fff; border: 2px solid #c8aa6e; box-shadow: 0 0 40px -8px rgba(10,200,185,.5); }
+  .qr svg { display: block; width: 100%; height: 100%; }
+  .lead { margin-top: 18px; font-size: 15px; font-weight: 600; }
+  .sub { margin-top: 4px; color: #a09b8c; max-width: 30ch; }
+  .code { margin-top: 18px; font: 700 30px/1 Georgia, serif; letter-spacing: .14em; color: #f0e6d2; }
+  .codelabel { margin-top: 6px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #a09b8c; }
+  .url { margin-top: 12px; font-size: 12px; color: #5b5a56; -webkit-user-select: text; user-select: text; }
+  .foot { margin-top: auto; padding-top: 18px; font-size: 12px; color: #5b5a56; max-width: 34ch; }
+</style></head>
+<body>
+  <h1><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><circle cx="16" cy="16" r="10.5" fill="none" stroke="#c8aa6e" stroke-opacity=".3" stroke-width="2.6"/><path d="M16 5.5A10.5 10.5 0 1 1 6.2 19.8" fill="none" stroke="#c8aa6e" stroke-width="2.6" stroke-linecap="round"/><circle cx="16" cy="16" r="3" fill="#c8aa6e"/></svg>HOVER</h1>
+  <div class="status ${st.lcu ? 'on' : ''}" id="status"><i class="dot"></i><span>${st.lcu ? 'League connected' : 'Waiting for League'}</span></div>
+  <div class="qr" id="qr">${qrSvg(st.pairUrl)}</div>
+  <p class="lead">Scan with your iPhone camera</p>
+  <p class="sub">Your iPhone needs to be on the same Wi‑Fi. Then tap Share → Add to Home Screen.</p>
+  <p class="code">${esc(st.code.slice(0, 3))} ${esc(st.code.slice(3))}</p>
+  <p class="codelabel">Pairing code</p>
+  <p class="url">${esc(st.url)}</p>
+  <p class="foot" id="foot">${st.devices ? `${st.devices} device${st.devices > 1 ? 's' : ''} paired. ` : ''}Closing this window keeps Hover running in the ${process.platform === 'darwin' ? 'menu bar' : 'system tray'}.</p>
+<script>
+  let url = ${JSON.stringify(st.pairUrl)};
+  setInterval(async () => {
+    try {
+      const s = await (await fetch('/api/status', { cache: 'no-store' })).json();
+      if (s.pairUrl !== url) return location.reload(); // network changed
+      const el = document.getElementById('status');
+      el.className = 'status' + (s.lcu ? ' on' : '');
+      el.querySelector('span').textContent = s.lcu ? 'League connected' : 'Waiting for League';
+    } catch {}
+  }, 2000);
+</script>
+</body></html>`;
+}
+
 function lanAddress() {
   const all = Object.entries(os.networkInterfaces()).flatMap(([name, list]) => (list || []).map((a) => ({ name, ...a })));
   const v4 = all.filter((a) => a.family === 'IPv4' && !a.internal);
@@ -262,11 +331,12 @@ function log(line) {
 }
 
 server.on('error', (err) => {
-  console.error(err.code === 'EADDRINUSE'
-    ? `\n  Hover is already running (port ${PORT} is in use). Close the other Hover window and try again.\n`
-    : `\n  Hover couldn’t start: ${err.message}\n`);
-  // Keep a double-clicked window open long enough to read the message.
-  setTimeout(() => process.exit(1), PACKAGED ? 60_000 : 0);
+  const message = err.code === 'EADDRINUSE'
+    ? `Port ${PORT} is already in use. Another copy of Hover (or something else) is running on it.`
+    : `Hover couldn’t start: ${err.message}`;
+  if (HOST?.onError) return HOST.onError(message);
+  console.error(`\n  ${message}\n`);
+  process.exit(1);
 });
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -279,4 +349,5 @@ server.listen(PORT, '0.0.0.0', () => {
   qrcode.generate(`${url}/?code=${pairCode}`, { small: true }, (q) => console.log(q.replace(/^/gm, '  ')));
   log('Waiting for the League client…');
   lcuWasUp = false;
+  HOST?.onReady?.({ port: PORT });
 });
