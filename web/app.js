@@ -26,12 +26,17 @@ async function connect() {
 
   const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws = sock;
-  sock.onopen = () => { attempts = 0; update({ link: 'open' }); };
+  sock.onopen = () => {
+    attempts = 0; update({ link: 'open' });
+    sayVisible();
+    send('notifyInfo').then((r) => r.ok && update({ notify: r.data }));
+  };
   sock.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'state') { m.state.at = performance.now(); update({ state: m.state }); }
     else if (m.type === 'data') update({ data: indexData(m.data) });
     else if (m.type === 'result') { pending.get(m.id)?.(m); pending.delete(m.id); }
+    else if (m.type === 'alert') onAlert(m.alert);
   };
   sock.onclose = () => {
     if (ws !== sock) return;
@@ -43,7 +48,18 @@ async function connect() {
   };
 }
 function retry() { clearTimeout(retryTimer); retryTimer = setTimeout(connect, Math.min(500 * 2 ** attempts++, 4000)); }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) connect(); });
+// Tell the computer whether Hover is on screen: while it is, alerts show here; once you
+// switch away they go out as phone notifications instead.
+function sayVisible() { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'visible', on: !document.hidden })); }
+document.addEventListener('visibilitychange', () => { sayVisible(); if (!document.hidden) connect(); });
+addEventListener('pagehide', () => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'visible', on: false })); });
+
+// Alerts while the app is open. Screens already react to most of them; these add sound and buzz.
+function onAlert(a) {
+  if (document.hidden) return;
+  if (a.kind === 'invite' || a.kind === 'turn' || a.kind === 'champSelect') { chime(); navigator.vibrate?.([140, 70, 140]); }
+  if (a.kind === 'dodged') toast(a.body);
+}
 
 function send(type, payload = {}) {
   return new Promise((resolve) => {
@@ -58,7 +74,10 @@ let toastTimer;
 function toast(text) {
   clearTimeout(toastTimer);
   update({ toast: { text, key: Date.now() } });
-  toastTimer = setTimeout(() => update({ toast: null }), 3200);
+  toastTimer = setTimeout(() => {
+    update({ toast: { ...store.toast, leaving: true } });
+    toastTimer = setTimeout(() => update({ toast: null }), 220);
+  }, 3200);
 }
 
 function indexData(d) {
@@ -142,6 +161,8 @@ function chime() {
 }
 
 const Icon = {
+  bell: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 2.8c-2.8 0-4.8 2.1-4.8 4.9v2.7L3.6 13.3h12.8l-1.6-2.9V7.7c0-2.8-2-4.9-4.8-4.9Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 15.6a2.1 2.1 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  copy: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="6.5" y="6.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.5 4.5v-.5a1.5 1.5 0 0 0-1.5-1.5H5A1.5 1.5 0 0 0 3.5 4v7A1.5 1.5 0 0 0 5 12.5h.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
   search: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.2 13.2 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   check: html`<svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   dice: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="7.2" cy="7.2" r="1.2" fill="currentColor"/><circle cx="12.8" cy="12.8" r="1.2" fill="currentColor"/><circle cx="10" cy="10" r="1.2" fill="currentColor"/></svg>`,
@@ -255,10 +276,13 @@ function App() {
     ${screen}
     ${!quiet && state.invites?.length > 0 && html`<${InviteBanner} invite=${state.invites[0]} />`}
     ${live && st.runesOpen && st.data && html`<${RunesScreen} s=${state} onClose=${() => update({ runesOpen: false })} />`}
-    ${st.toast && html`<div class="toast" key=${st.toast.key} role="status">${st.toast.text}</div>`}
+    ${live && st.notifyOpen && html`<${NotifySheet} onClose=${() => update({ notifyOpen: false })} />`}
+    ${st.toast && html`<div class=${cx('toast', st.toast.leaving && 'leaving')} key=${st.toast.key} role="status">${st.toast.text}</div>`}
   `;
 }
 const openRunes = () => update({ runesOpen: true });
+const openNotify = () => update({ notifyOpen: true });
+const BellBtn = () => html`<button class=${cx('icon-btn glass bell', store.notify?.on && 'on')} onClick=${openNotify} aria-label="Phone notifications">${Icon.bell}</button>`;
 
 function phaseScreen(s) {
   switch (s.phase) {
@@ -345,13 +369,14 @@ function Home({ s }) {
     <main class="screen home">
       <header class="top-row">
         <${Logo} />
-        <span class="chip"><i class="dot live" />Client connected</span>
+        <div class="top-actions"><span class="chip"><i class="dot live" />Connected</span><${BellBtn} /></div>
       </header>
       <div class="home-hero">
         <p class="eyebrow">${after ? 'Game over' : 'Welcome, summoner'}</p>
         <h1 class="mega">${after ? 'Good game' : 'Summoner’s Rift awaits'}</h1>
         <${Rule} />
         <p class="sub">${after ? 'Queue up again whenever you’re ready.' : 'Open a lobby, queue and draft from your phone.'}</p>
+        <${NotifyNudge} />
       </div>
       <footer class="dock">
         <button class="btn hex xl" onClick=${() => setPicking(true)}><span>${after ? 'Play again' : 'Play'}</span></button>
@@ -435,7 +460,7 @@ function Lobby({ s }) {
     <main class="screen lobby">
       <header class="top-row">
         <button class="icon-btn glass back" onClick=${() => send('leaveLobby')} aria-label="Leave lobby">${Icon.back}</button>
-        <span class="chip">${others ? `Party of ${others + 1}` : 'Lobby'}</span>
+        <div class="top-actions"><span class="chip">${others ? `Party of ${others + 1}` : 'Lobby'}</span><${BellBtn} /></div>
       </header>
       <div class="stage">
         <p class="eyebrow">${mapOf(lobby?.queueId).place}</p>
@@ -469,20 +494,23 @@ const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY', 'FILL'];
 const profileIcon = (id) => asset(`/lol-game-data/assets/v1/profile-icons/${id ?? 29}.jpg`);
 
 // Lane glyphs: a little map square with the lane traced in.
+// Role icons. Lanes are a tiny map with your lane lit; jungle, support and fill get emblems.
+const LANES = { TOP: 'M5 19V5h14', MIDDLE: 'M5.5 18.5 18.5 5.5', BOTTOM: 'M5 19h14V5' };
+const EMBLEMS = {
+  // A fang-like leaf for jungle.
+  JUNGLE: html`<path class="rg-fill" d="M12 2.8c-.9 3.3-5.6 5.4-5.6 10.2 0 2.9 1.9 5 4 5.8L12 21.4l1.6-2.6c2.1-.8 4-2.9 4-5.8 0-4.8-4.7-6.9-5.6-10.2Z" /><path class="rg-cut" d="M12 9v8.2M12 12.4l-2.2-1.6M12 14.6l2.2-1.6" />`,
+  // A crest with a gem for support.
+  UTILITY: html`<path class="rg-fill" d="M12 3 19.2 5.8v5.6c0 4.4-3 7.9-7.2 9.6-4.2-1.7-7.2-5.2-7.2-9.6V5.8Z" /><path class="rg-gem" d="M12 8.2 14.6 12 12 15.8 9.4 12Z" />`,
+  // A four-point star for fill.
+  FILL: html`<path class="rg-fill" d="M12 2.5 14 10l7.5 2-7.5 2-2 7.5-2-7.5-7.5-2 7.5-2Z" />`,
+};
 function RoleGlyph({ role, size = 22 }) {
-  const lane = {
-    TOP: html`<path d="M6 18V6h12" />`,
-    BOTTOM: html`<path d="M6 18h12V6" />`,
-    MIDDLE: html`<path d="M7 17 17 7" />`,
-    JUNGLE: html`<path d="M12 6.5 16.5 14h-9Z M12 14v4" />`,
-    UTILITY: html`<path d="M12 5.5 17.5 8v4c0 3.2-2.4 5.6-5.5 6.5C8.9 17.6 6.5 15.2 6.5 12V8Z" />`,
-    FILL: html`<path d="M12 6v12M6 12h12M8 8l8 8M16 8l-8 8" />`,
-  }[role];
-  return html`
-    <svg class=${cx('role-glyph', `r-${(role || 'none').toLowerCase()}`)} viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true">
-      <rect x="3.5" y="3.5" width="17" height="17" rx="1" class="rg-frame" />
-      ${lane ? html`<g class="rg-lane">${lane}</g>` : html`<path d="M9 12h6" class="rg-lane" />`}
-    </svg>`;
+  const r = role || 'UNSELECTED';
+  let art;
+  if (LANES[r]) art = html`${Object.entries(LANES).sort(([a], [b]) => (a === r) - (b === r)).map(([k, d]) => html`<path key=${k} d=${d} class=${k === r ? 'rg-on' : 'rg-dim'} />`)}`;
+  else if (EMBLEMS[r]) art = EMBLEMS[r];
+  else art = html`<circle class="rg-none" cx="12" cy="12" r="7.5" /><path class="rg-none" d="M9.5 12h5" />`;
+  return html`<svg class=${cx('role-glyph', `r-${r.toLowerCase()}`)} viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true">${art}</svg>`;
 }
 
 function Party({ lobby, onInvite, onMember }) {
@@ -1238,14 +1266,120 @@ function RuneEditor({ page, onClose }) {
     </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Phone notifications (through the free ntfy app, so they arrive with Safari closed)
+// ---------------------------------------------------------------------------
+const NTFY_APP = 'https://apps.apple.com/app/ntfy/id1625396347';
+const NUDGE_KEY = 'hover.notifyNudge';
+const stored = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const storeKey = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+// Plain-HTTP pages don't get the async clipboard API, so fall back to a selected field.
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const t = Object.assign(document.createElement('textarea'), { value: text, readOnly: true });
+  Object.assign(t.style, { position: 'fixed', top: '0', opacity: '0', fontSize: '16px' });
+  document.body.append(t);
+  t.select(); t.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  t.remove();
+  return ok;
+}
+
+function NotifyNudge() {
+  const st = useStore();
+  const [gone, setGone] = useState(() => stored(NUDGE_KEY) === 'hidden');
+  if (gone || !st.notify || st.notify.on) return null;
+  const hide = () => { storeKey(NUDGE_KEY, 'hidden'); setGone(true); };
+  return html`
+    <div class="nudge">
+      <span class="nudge-icon">${Icon.bell}</span>
+      <button class="nudge-text" onClick=${openNotify}><b>Get alerts when Hover is closed</b><span>Invites, match found, your turn to pick</span></button>
+      <button class="icon-btn" onClick=${hide} aria-label="Not now">${Icon.x}</button>
+    </div>`;
+}
+
+function NotifySheet({ onClose }) {
+  const st = useStore();
+  const n = st.notify || { on: false };
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const run = async (type, payload) => { setBusy(true); const r = await send(type, payload); setBusy(false); if (r.ok) update({ notify: r.data }); return r; };
+  const copy = async () => {
+    if (await copyText(n.topic)) { setCopied(true); setTimeout(() => setCopied(false), 1800); }
+    else toast('Press and hold the topic to copy it');
+  };
+  const custom = n.server && n.server !== 'https://ntfy.sh';
+  return html`
+    <${Sheet} title="Notifications" onClose=${onClose}>
+      <div class="notify">
+        <button class=${cx('switch-row', n.on && 'on')} role="switch" aria-checked=${n.on} disabled=${busy} onClick=${() => run('notifySet', { on: !n.on })}>
+          <span class="switch-text"><b>Alerts with Hover closed</b><span>Party invites, match found, champ select, your turn to ban or pick, swap offers, the game loading in and AFK warnings.</span></span>
+          <span class="switch" aria-hidden="true"><i /></span>
+        </button>
+        ${n.on && n.topic && html`
+          <ol class="steps">
+            <li style=${{ '--i': 0 }}><span class="step-n">1</span><div class="step-body"><b>Get the free ntfy app</b><span>It delivers Hover’s alerts to your iPhone, even when Safari is closed.</span>
+              <a class="btn glass sm" href=${NTFY_APP} target="_blank" rel="noopener">Open App Store</a></div></li>
+            <li style=${{ '--i': 1 }}><span class="step-n">2</span><div class="step-body"><b>Subscribe to your topic</b><span>In ntfy, tap <b>+</b>, paste this topic${custom ? html`, turn on <b>Use another server</b> and enter <b>${n.server}</b>` : ''}, then tap <b>Subscribe</b>. Allow notifications when asked.</span>
+              <div class="topic"><code>${n.topic}</code><button class="btn glass sm" onClick=${copy}>${copied ? 'Copied' : html`${Icon.copy}<span>Copy</span>`}</button></div></div></li>
+            <li style=${{ '--i': 2 }}><span class="step-n">3</span><div class="step-body"><b>Try it</b><span>Leave Safari, then check that the test arrives.</span>
+              <button class="btn hex sm" disabled=${busy} onClick=${async () => { const r = await run('notifyTest'); if (r.ok) toast('Test sent. It should arrive in a few seconds.'); }}>Send a test</button></div></li>
+          </ol>
+          <p class="fine">While Hover is open on your phone, alerts show here instead. They’re sent through ntfy.sh and say things like “Match found”; keep the topic to yourself.</p>
+        `}
+      </div>
+    </${Sheet}>`;
+}
+
+// Bottom sheet: slides up, closes from the scrim, Escape, the X, or a swipe down.
 function Sheet({ title, onClose, children }) {
   const [closing, setClosing] = useState(false);
-  const close = () => { setClosing(true); setTimeout(onClose, 180); };
+  const sheet = useRef(null), scrim = useRef(null), drag = useRef(null);
+  const close = () => { if (closing) return; setClosing(true); setTimeout(onClose, 200); };
   useEffect(() => { const k = (e) => e.key === 'Escape' && close(); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
+
+  const move = (y) => {
+    sheet.current.style.transform = `translateY(${y}px)`;
+    scrim.current.style.opacity = String(Math.max(0, 1 - y / 400));
+  };
+  // Touch, not pointer, events: iOS cancels a pointer drag as soon as it decides to scroll.
+  const start = (e) => {
+    if (e.touches.length !== 1) return;
+    drag.current = { y0: e.touches[0].clientY, t0: e.timeStamp, dy: 0, live: false, top: sheet.current.scrollTop <= 0 };
+  };
+  const moving = (e) => {
+    const d = drag.current;
+    if (!d || !d.top) return;
+    d.dy = e.touches[0].clientY - d.y0;
+    if (d.dy <= 0 && !d.live) { d.top = false; return; } // scrolling the content up: leave it be
+    e.preventDefault();
+    if (!d.live && d.dy > 4) { d.live = true; sheet.current.classList.add('dragging'); }
+    if (d.live) move(Math.max(0, d.dy));
+  };
+  const end = (e) => {
+    const d = drag.current; drag.current = null;
+    if (!d?.live) return;
+    const el = sheet.current;
+    el.classList.remove('dragging');
+    const v = d.dy / Math.max(1, e.timeStamp - d.t0); // px per ms
+    if (d.dy > 110 || v > 0.6) {
+      el.style.transition = 'transform 220ms cubic-bezier(0.4, 0, 1, 1)';
+      scrim.current.style.transition = 'opacity 220ms ease-in';
+      move(el.offsetHeight + 40);
+      setTimeout(onClose, 220);
+    } else {
+      el.style.transition = 'transform 420ms var(--spring)';
+      scrim.current.style.transition = 'opacity 300ms ease';
+      move(0);
+      setTimeout(() => { if (!sheet.current) return; el.style.transition = ''; el.style.transform = ''; scrim.current.style.transition = ''; }, 440);
+    }
+  };
   return html`
     <div class=${cx('sheet-layer', closing && 'closing')}>
-      <button class="scrim" aria-label="Close" onClick=${close} />
-      <div class="sheet" role="dialog" aria-label=${title}>
+      <button class="scrim" ref=${scrim} aria-label="Close" onClick=${close} />
+      <div class="sheet" ref=${sheet} role="dialog" aria-label=${title} onTouchStart=${start} onTouchMove=${moving} onTouchEnd=${end} onTouchCancel=${end}>
         <div class="grabber" />
         <div class="sheet-head"><h2 class="sheet-title">${title}</h2><button class="icon-btn" onClick=${close} aria-label="Close">${Icon.x}</button></div>
         ${children}

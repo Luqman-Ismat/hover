@@ -1,6 +1,7 @@
 // Hover desktop app: runs the bridge, shows the Connect window (QR code + pairing code),
 // and lives in the menu bar (Mac) or system tray (Windows) when the window is closed.
-import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, Notification } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, dialog } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,7 +11,13 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const MAC = process.platform === 'darwin';
 const WHERE = MAC ? 'menu bar' : 'system tray';
 
-let win = null, tray = null, quitting = false, toldAboutTray = false, last = null;
+let win = null, tray = null, quitting = false, last = null;
+
+// Remembers small things between launches, like whether we've explained the tray yet.
+const prefsFile = () => path.join(app.getPath('userData'), 'prefs.json');
+const prefs = () => { try { return JSON.parse(fs.readFileSync(prefsFile(), 'utf8')); } catch { return {}; } };
+const setPref = (k, v) => { try { fs.writeFileSync(prefsFile(), JSON.stringify({ ...prefs(), [k]: v })); } catch {} };
+if (!MAC) app.setAppUserModelId('app.hover.desktop'); // Windows needs this to show notifications
 
 // One Hover at a time: opening it again just brings the window back.
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -25,6 +32,7 @@ else {
 async function start() {
   if (MAC) app.dock?.hide();
   makeTray();
+  makeAppMenu();
   // The bridge calls back once it's listening (or if it can't start).
   globalThis.__hoverHost = {
     onReady: () => { showWindow(); poll(); },
@@ -49,15 +57,11 @@ function showWindow() {
     // It only ever shows the Connect page.
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith(`${BASE}/connect`)) e.preventDefault(); });
+    // Closing the window (red button, ⌘W, ⌘Q, Alt+F4, the X) tucks Hover into the menu bar / tray.
     win.on('close', (e) => {
       if (quitting) return;
       e.preventDefault();
-      win.hide();
-      if (MAC) app.dock?.hide();
-      if (!toldAboutTray && Notification.isSupported()) {
-        toldAboutTray = true;
-        new Notification({ title: 'Hover is still running', body: `It’s in the ${WHERE}. Click the Hover icon to show the QR code or quit.` }).show();
-      }
+      toTray();
     });
   } else {
     win.reload(); // fresh status and code
@@ -65,6 +69,40 @@ function showWindow() {
   if (MAC) app.dock?.show();
   win.show();
   win.focus();
+}
+
+function toTray() {
+  if (!win?.isVisible()) return;
+  win.hide();
+  if (MAC) app.dock?.hide();
+  if (!prefs().toldAboutTray) {
+    // First time: say clearly where Hover went.
+    setPref('toldAboutTray', true);
+    dialog.showMessageBox({
+      type: 'info', title: 'Hover', buttons: ['Got it'],
+      message: `Hover is still running in the ${WHERE}`,
+      detail: MAC
+        ? 'Look for the ring icon at the top right of your screen. Click it to show the QR code again or to quit Hover.'
+        : 'Look for the ring icon at the bottom right of your screen. If you don’t see it, click the ^ arrow next to the clock. Click it to show the QR code again; right-click it to quit Hover.',
+    });
+  } else if (!MAC && tray) {
+    tray.displayBalloon({ title: 'Hover is still running', content: 'It’s in the system tray. Right-click the icon to quit.', iconType: 'info' });
+  }
+}
+
+// Mac: ⌘Q and ⌘W close the window to the menu bar like the red button; quitting is in the menu bar menu.
+function makeAppMenu() {
+  if (!MAC) { Menu.setApplicationMenu(null); return; }
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'Hover', submenu: [
+      { role: 'about' },
+      { type: 'separator' },
+      { label: 'Close to Menu Bar', accelerator: 'Command+Q', click: () => toTray() },
+      { label: 'Quit Hover', accelerator: 'Command+Option+Q', click: () => { quitting = true; app.quit(); } },
+    ] },
+    { label: 'Edit', submenu: [{ role: 'copy' }, { role: 'selectAll' }] },
+    { label: 'Window', submenu: [{ label: 'Close Window', accelerator: 'Command+W', click: () => toTray() }, { role: 'minimize' }] },
+  ]));
 }
 
 function makeTray() {

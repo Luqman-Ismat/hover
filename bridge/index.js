@@ -21,9 +21,16 @@ const DEVICES = path.join(HOME, 'devices.json');
 const COOKIE = 'hover_device';
 
 fs.mkdirSync(HOME, { recursive: true });
-// Optional settings without env vars: ~/.hover/config.json  { "ntfyTopic": "hover-…" }
-const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')); } catch { return {}; } })();
-const NTFY = process.env.HOVER_NTFY_TOPIC || CONFIG.ntfyTopic; // optional: phone pushes via ntfy.sh
+// Settings: ~/.hover/config.json  { "ntfyTopic": "hover-…", "notify": true }
+const CONFIG_FILE = path.join(HOME, 'config.json');
+const CONFIG = (() => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } })();
+const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(CONFIG, null, 2), { mode: 0o600 });
+// Phone notifications go through ntfy.sh (a free push service with an iPhone app): a web page on
+// plain local HTTP can't receive iOS push itself. Off until you turn it on from the phone.
+if (process.env.HOVER_NTFY_TOPIC) { CONFIG.ntfyTopic = process.env.HOVER_NTFY_TOPIC; CONFIG.notify = true; }
+else if (CONFIG.ntfyTopic && CONFIG.notify === undefined) CONFIG.notify = true; // set by hand before this switch existed
+const NTFY_SERVER = (process.env.HOVER_NTFY_SERVER || CONFIG.ntfyServer || 'https://ntfy.sh').replace(/\/+$/, '');
+const newTopic = () => `hover-${crypto.randomBytes(12).toString('base64url').replace(/[^A-Za-z0-9]/g, '').toLowerCase().slice(0, 14)}`;
 
 // ---- paired devices -------------------------------------------------------
 const loadDevices = () => { try { return JSON.parse(fs.readFileSync(DEVICES, 'utf8')); } catch { return []; } };
@@ -49,28 +56,63 @@ function authed(req) {
 const client = new ClientState();
 client.start();
 
-// Phone pushes (optional, via ntfy) for the moments you might be away from the screen.
-function push(title, body, tags, priority = 'high') {
-  if (!NTFY) return;
-  fetch(`https://ntfy.sh/${encodeURIComponent(NTFY)}`, {
-    method: 'POST',
-    headers: { Title: title, Priority: priority, Tags: tags, Click: `http://${lanAddress()}:${PORT}` },
-    body,
-  }).catch(() => {});
+// ---- alerts -----------------------------------------------------------------
+// Every moment that needs you: the phone app shows it if it's open, otherwise it goes out as a
+// push notification (when turned on). `in` is what the open phone app should do with it.
+const ALERTS = {
+  invite:      (e) => ({ title: 'Party invite', body: `${e.from} invited you${e.queue ? ` to ${e.queue}` : ''}. Join from Hover.`, tags: 'busts_in_silhouette', priority: 'high' }),
+  readyCheck:  () => ({ title: 'Match found', body: 'Accept it from Hover.', tags: 'crossed_swords', priority: 'urgent' }),
+  champSelect: () => ({ title: 'Champ select started', body: 'Show your pick and get ready for bans.', tags: 'shield', priority: 'high' }),
+  turn:        (type) => ({ title: type === 'ban' ? 'Your turn to ban' : 'Your turn to pick', body: type === 'ban' ? 'Pick a champion to ban.' : 'Lock in your champion.', tags: type === 'ban' ? 'no_entry' : 'crossed_swords', priority: 'urgent' }),
+  pickTimeout: (type) => ({ title: type === 'ban' ? 'Ban now' : 'Pick now', body: '10 seconds left. If the timer runs out you’ll be removed from champ select.', tags: 'hourglass', priority: 'urgent' }),
+  swapRequest: (e) => ({ title: e.kind === 'trade' ? 'Champion trade offer' : e.kind === 'order' ? 'Pick order swap offer' : 'Role swap offer', body: `${e.from} wants to swap. Answer from Hover.`, tags: 'repeat', priority: 'high' }),
+  dodged:      (requeued) => ({ title: 'Champ select ended', body: requeued ? 'Someone dodged. You’re back in the queue.' : 'Someone dodged. You’re back in the lobby.', tags: 'leftwards_arrow_with_hook', priority: 'default' }),
+  gameLoaded:  () => ({ title: 'Game loaded', body: 'The game timer has started. Get to your computer.', tags: 'video_game', priority: 'high' }),
+  afkRisk:     () => ({ title: 'AFK warning coming', body: 'You haven’t bought anything yet. Get to your computer.', tags: 'warning', priority: 'urgent' }),
+};
+const phoneOpen = () => [...wss.clients].some((ws) => ws.readyState === 1 && ws.visible);
+function alert(kind, arg) {
+  const a = { kind, ...ALERTS[kind](arg) };
+  log(`${a.title}: ${a.body}`);
+  broadcast({ type: 'alert', alert: a });
+  if (!phoneOpen()) pushNotify(a);
 }
-client.on('readyCheck', () => push('Match found', 'Accept it from Hover.', 'crossed_swords', 'urgent'));
-client.on('pickTimeout', (type) => {
-  log(`Your ${type} timer is almost out`);
-  push(type === 'ban' ? 'Ban now' : 'Pick now', '10 seconds left. If the timer runs out you’ll be removed from champ select.', 'hourglass', 'urgent');
-});
-client.on('gameLoaded', () => {
-  log('Game loaded: the game timer has started');
-  push('Game loaded', 'The game timer has started. Get to your computer.', 'video_game');
-});
-client.on('afkRisk', () => {
-  log('Nothing bought yet: AFK warning likely soon');
-  push('AFK warning coming', 'You haven’t bought anything yet. Get to your computer.', 'warning', 'urgent');
-});
+function pushNotify(a) {
+  if (!CONFIG.notify || !CONFIG.ntfyTopic) return Promise.resolve(false);
+  // ntfy headers are latin-1: strip curly quotes and anything else outside it.
+  const h = (v) => String(v).replace(/[’‘]/g, "'").replace(/[^\x20-\x7e\xa0-\xff]/g, '');
+  return fetch(`${NTFY_SERVER}/${encodeURIComponent(CONFIG.ntfyTopic)}`, {
+    method: 'POST',
+    headers: { Title: h(a.title), Priority: a.priority, Tags: a.tags, Click: phoneUrl() },
+    body: a.body,
+    signal: AbortSignal.timeout(8000),
+  }).then((r) => r.ok).catch(() => false);
+}
+for (const kind of Object.keys(ALERTS)) client.on(kind, (arg) => alert(kind, arg));
+
+// Phone-side notification settings.
+function notifyInfo() {
+  return { on: !!CONFIG.notify && !!CONFIG.ntfyTopic, topic: CONFIG.ntfyTopic || null, server: NTFY_SERVER };
+}
+async function notifyCommand(msg) {
+  if (msg.type === 'notifyInfo') return notifyInfo();
+  if (msg.type === 'notifySet') {
+    if (typeof msg.on !== 'boolean') throw new Error('Bad request');
+    if (msg.on && !CONFIG.ntfyTopic) CONFIG.ntfyTopic = newTopic();
+    CONFIG.notify = msg.on;
+    saveConfig();
+    log(msg.on ? `Phone notifications on (ntfy topic “${CONFIG.ntfyTopic}”)` : 'Phone notifications off');
+    return notifyInfo();
+  }
+  if (msg.type === 'notifyTest') {
+    if (!notifyInfo().on) throw new Error('Turn notifications on first');
+    const ok = await pushNotify({ title: 'Hover is set up', body: 'You’ll get alerts here when Safari is closed.', tags: 'white_check_mark', priority: 'high' });
+    if (!ok) throw new Error('Couldn’t reach ntfy. Check your computer’s internet connection.');
+    return notifyInfo();
+  }
+}
+const PHONE_COMMANDS = new Set(['notifyInfo', 'notifySet', 'notifyTest']);
+const RETURNS_DATA = new Set(['friends', ...PHONE_COMMANDS]);
 
 let lcuWasUp = null;
 client.on('state', (s) => {
@@ -224,10 +266,12 @@ wss.on('connection', (ws) => {
   ws.on('message', async (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    // Is Hover open on screen? If so, alerts show there instead of as notifications.
+    if (msg?.type === 'visible') { ws.visible = !!msg.on; return; }
     try {
-      const out = await client.command(msg);
+      const out = PHONE_COMMANDS.has(msg?.type) ? await notifyCommand(msg) : await client.command(msg);
       // Only read commands hand data back; everything else is just ok/error.
-      ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: true, ...(msg.type === 'friends' ? { data: out } : {}) }));
+      ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: true, ...(RETURNS_DATA.has(msg.type) ? { data: out } : {}) }));
     } catch (err) {
       ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: err.message }));
     }
@@ -344,7 +388,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  Hover is running\n`);
   console.log(`  Open on your phone   ${url}`);
   console.log(`  Pairing code         ${pairCode.slice(0, 3)} ${pairCode.slice(3)}`);
-  if (NTFY) console.log(`  Queue alerts         ntfy topic “${NTFY}”`);
+  if (notifyInfo().on) console.log(`  Phone notifications  ntfy topic “${CONFIG.ntfyTopic}”`);
   console.log('');
   qrcode.generate(`${url}/?code=${pairCode}`, { small: true }, (q) => console.log(q.replace(/^/gm, '  ')));
   log('Waiting for the League client…');

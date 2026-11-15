@@ -14,22 +14,25 @@ iPhone (Safari / home‑screen app)  ⇄  Wi‑Fi  ⇄  Hover on your computer  
 2. **A window shows a QR code.** On your iPhone (same Wi‑Fi), point the Camera at it and open the link. That pairs the phone; you only do it once.
 3. In Safari, tap **Share → Add to Home Screen**. Hover now opens full‑screen like an app.
 
-**Closing the window doesn't quit Hover.** It keeps running in the **menu bar** (Mac, top right) or the **system tray** (Windows, bottom right; check the **^** arrow). Click the ring icon there to show the QR code again, turn on **Start Hover at login**, or **Quit Hover**. Opening Hover again while it's running just brings the window back.
+**Closing the window doesn't quit Hover** (the close button, ⌘W/⌘Q on Mac, Alt+F4 on Windows). It keeps running in the **menu bar** (Mac, top right) or the **system tray** (Windows, bottom right; check the **^** arrow), and says so the first time. Click the ring icon there to show the QR code again, turn on **Start Hover at login**, or **Quit Hover**. Opening Hover again while it's running just brings the window back.
 
 Start League before or after Hover; it finds the client by itself.
 
-### Alerts when your phone is locked (optional)
+### Notifications when Hover isn't open
 
-A web app can only buzz while it's open. To get real notifications for queue pops, your pick timer, the game loading in and AFK warnings, install the free [ntfy](https://ntfy.sh) app on your iPhone, subscribe to a hard‑to‑guess topic, and put it in `~/.hover/config.json` (on Windows, `C:\Users\<you>\.hover\config.json`):
+On your phone, tap the **bell** at the top of Hover and turn on **Alerts with Hover closed**. It walks you through it:
 
-```json
-{ "ntfyTopic": "hover-7f3k2q9x" }
-```
+1. Get the free [ntfy](https://ntfy.sh) app from the App Store.
+2. In ntfy, tap **+**, paste the topic Hover shows you (there's a Copy button), and tap **Subscribe**.
+3. Tap **Send a test**.
 
-Restart Hover after saving. Tapping a notification opens Hover.
+From then on, when you've left Safari or locked your phone you get a notification for party invites, match found, champ select starting, your turn to ban or pick (and 10 seconds left), swap offers, someone dodging, the game loading in and AFK warnings. Tapping one opens Hover. While Hover is open on your phone, you hear and feel these in the app instead.
+
+Safari can't receive real iPhone push notifications from a page served over your home Wi‑Fi (Apple requires a secure, internet‑hosted site), so Hover sends them through ntfy.sh. The topic is random and saved in `~/.hover/config.json`; the notifications only say things like "Match found".
 
 ### What the alerts mean
 
+- **Party invite / Match found / Champ select started / Your turn to ban or pick / Swap offer:** something is waiting for you to tap it.
 - **Pick or ban now:** 10 seconds left on your turn. If it runs out you're removed from champ select.
 - **Game loaded:** the game's own timer has started (Hover reads League's in‑game API).
 - **AFK warning coming:** about 75 seconds in, you still haven't bought anything, which usually means you're not at your computer. League doesn't expose its real AFK timer, so this is an estimate.
@@ -53,7 +56,7 @@ The apps aren't signed with an Apple or Microsoft developer certificate, which i
 npm run app    # the desktop app (window + menu bar / tray) from source
 npm start      # just the bridge, in a terminal, against the real client
 npm run dev    # mock League client + Hover
-npm test       # end-to-end: pairing, parties, roles, runes, queue, draft, swaps, ARAM, live game
+npm test       # end-to-end: pairing, notifications, parties, roles, runes, queue, draft, swaps, ARAM, live game
 ```
 
 The mock (`mock/lcu.js`) simulates the client: friends and invites, a ranked draft with bot teammates and opponents, swap requests, ARAM, rune pages and the in‑game API. It pulls game data and art from CommunityDragon. Set `MOCK_SPEED=4` to run it faster.

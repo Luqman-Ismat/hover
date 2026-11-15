@@ -57,6 +57,8 @@ export class ClientState extends EventEmitter {
   constructor() {
     super();
     this.lcu = new LCU(Object.values(URI));
+    this.seenInvites = new Set(); // invitation ids already announced
+    this.seenSwaps = new Set();   // swap requests already announced
     this.reset();
     this.data = null; // champions + spells, fetched once per client launch
     this.lcu.on('connect', () => this.#onConnect());
@@ -136,6 +138,9 @@ export class ClientState extends EventEmitter {
       this.s.phase = value || 'None';
       if (value === 'ChampSelect' && prev !== 'ChampSelect') this.#loadChampSelectExtras();
       if (value === 'ReadyCheck' && prev !== 'ReadyCheck') this.emit('readyCheck');
+      if (value === 'ChampSelect' && prev !== 'ChampSelect') this.emit('champSelect');
+      // Someone dodged: champ select fell back to the queue (or the lobby).
+      if (prev === 'ChampSelect' && (value === 'Matchmaking' || value === 'Lobby')) this.emit('dodged', value === 'Matchmaking');
       if (value === 'GameStart' || value === 'InProgress') this.#startLive();
       else if (value !== 'Reconnect') this.#stopLive();
     }
@@ -143,6 +148,17 @@ export class ClientState extends EventEmitter {
       this.s.sessionAt = Date.now();
       if (value) this.#refreshPools();
       this.#armPickWarning();
+      this.#watchTurnAndSwaps();
+    }
+    if (key === 'invites') {
+      // One alert per new party invite.
+      const pending = (Array.isArray(value) ? value : []).filter((i) => i.state === 'Pending');
+      for (const i of pending) {
+        if (this.seenInvites.has(i.invitationId)) continue;
+        this.seenInvites.add(i.invitationId);
+        const q = i.gameConfig?.queueId;
+        this.emit('invite', { from: i.fromSummonerName || 'A friend', queue: QUEUES.find((x) => x.id === q)?.name ?? null });
+      }
     }
     if (key === 'lobby') {
       const q = value?.gameConfig?.queueId;
@@ -265,6 +281,28 @@ export class ClientState extends EventEmitter {
     const sess = this.s.session;
     if (!sess) return [];
     return (sess.actions || []).flat().filter((a) => a.actorCellId === sess.localPlayerCellId && !a.completed);
+  }
+
+  // "Your turn" once per pick/ban, and one alert per swap request someone sends you.
+  #watchTurnAndSwaps() {
+    const sess = this.s.session;
+    if (!sess) { this.turnAction = null; this.seenSwaps.clear(); return; }
+    const mine = (sess.actions || []).flat().find((a) => a.actorCellId === sess.localPlayerCellId && a.isInProgress && !a.completed);
+    if (mine && this.turnAction !== mine.id) {
+      this.turnAction = mine.id;
+      this.emit('turn', mine.type);
+    }
+    const nameOf = (cell) => (sess.myTeam || []).find((m) => m.cellId === cell);
+    for (const [kind, [field]] of Object.entries(SWAP_KINDS)) {
+      for (const x of Array.isArray(sess[field]) ? sess[field] : []) {
+        const k = `${kind}:${x.id}`;
+        if (x.state !== 'RECEIVED') { this.seenSwaps.delete(k); continue; }
+        if (this.seenSwaps.has(k)) continue;
+        this.seenSwaps.add(k);
+        const m = nameOf(x.cellId);
+        this.emit('swapRequest', { kind, from: m?.gameName || m?.summonerName || 'A teammate' });
+      }
+    }
   }
 
   // One heads-up per pick/ban, ten seconds before your timer runs out.

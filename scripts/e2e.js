@@ -6,17 +6,26 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 import WebSocket from 'ws';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'hover-e2e-'));
 const PORT = 7399;
-const env = { ...process.env, HOVER_PORT: String(PORT), MOCK_PORT: '52499', MOCK_LIVE_PORT: '52498', HOVER_LIVE_URL: 'http://127.0.0.1:52498', MOCK_SPEED: '5', HOVER_HOME: tmp, HOVER_LOCKFILE: path.join(tmp, 'lockfile') };
+const env = { ...process.env, HOVER_PORT: String(PORT), MOCK_PORT: '52499', MOCK_LIVE_PORT: '52498', HOVER_LIVE_URL: 'http://127.0.0.1:52498', MOCK_SPEED: '5', HOVER_HOME: tmp, HOVER_NTFY_SERVER: 'http://127.0.0.1:52497', HOVER_LOCKFILE: path.join(tmp, 'lockfile') };
 const base = `http://127.0.0.1:${PORT}`;
+
+// Stand-in for ntfy.sh: records every phone notification the bridge sends.
+const pushes = [];
+const ntfy = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => { pushes.push({ topic: decodeURIComponent(req.url.slice(1)), title: req.headers.title, priority: req.headers.priority, body }); res.end('{}'); });
+}).listen(52497, '127.0.0.1');
 
 const mock = spawn(process.execPath, ['mock/lcu.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'] });
 const bridge = spawn(process.execPath, ['bridge/index.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'] });
-const done = (code) => { mock.kill(); bridge.kill(); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(code); };
+const done = (code) => { ntfy.close(); mock.kill(); bridge.kill(); fs.rmSync(tmp, { recursive: true, force: true }); process.exit(code); };
 const timeout = setTimeout(() => { console.error('✗ timed out'); done(1); }, 300_000);
 
 let out = '';
@@ -43,12 +52,14 @@ try {
 
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie } });
   let state = null, data = null, seq = 0;
+  const alerts = [];
   const waiters = [], pending = new Map();
   ws.on('message', (raw) => {
     const m = JSON.parse(raw);
     if (m.type === 'state') { state = m.state; waiters.slice().forEach((w) => w()); }
     if (m.type === 'data') data = m.data;
     if (m.type === 'result') pending.get(m.id)?.(m);
+    if (m.type === 'alert') alerts.push(m.alert);
   });
   await new Promise((r) => ws.on('open', r));
   const until = (pred, label) => new Promise((resolve, reject) => {
@@ -92,6 +103,26 @@ try {
 
   assert.equal((await cmd('rawRequest', { path: '/lol-login/v1/session' })).ok, false);
   ok('unknown commands are rejected');
+
+  // ---- phone notifications ----
+  let n = await cmd('notifyInfo');
+  assert.ok(n.ok && n.data.on === false, 'notifications start off');
+  assert.equal((await cmd('notifyTest')).ok, false);
+  n = await cmd('notifySet', { on: true });
+  assert.ok(n.ok && n.data.on && /^hover-[a-z0-9]{6,}$/.test(n.data.topic), 'topic created');
+  const topic = n.data.topic;
+  assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'config.json'), 'utf8')).ntfyTopic, topic, 'topic saved');
+  assert.ok((await cmd('notifyTest')).ok);
+  assert.ok(pushes.some((p) => p.topic === topic && p.title === 'Hover is set up'), 'test notification sent');
+  assert.equal((await cmd('notifySet', { on: 'yes' })).ok, false);
+  ok(`notifications: turned on with topic ${topic}, test notification delivered`);
+  const pushed = (title) => pushes.some((p) => p.title === title);
+  const alerted = (kind) => alerts.some((a) => a.kind === kind);
+  const soon = (pred, label) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => (pred() ? resolve() : Date.now() - t0 > 5000 ? reject(new Error(`waiting for ${label}`)) : setTimeout(tick, 50));
+    tick();
+  });
 
   // ---- runes ----
   const runes = data.runes;
@@ -147,13 +178,17 @@ try {
   await until((s) => s.lobby.members.length === 2, 'kicked');
   ok(`kicked ${online[1].name}`);
 
+  ws.send(JSON.stringify({ type: 'visible', on: true })); // Hover open on the phone
   assert.ok((await cmd('search')).ok);
   await until((s) => s.phase === 'Matchmaking' && s.search, 'queue');
   ok('find match -> in queue');
   await until((s) => s.phase === 'ReadyCheck' && s.readyCheck?.response === 'None', 'ready check');
+  await soon(() => alerted('readyCheck'), 'match found alert');
+  assert.ok(!pushed('Match found'), 'no notification while the app is open');
+  ws.send(JSON.stringify({ type: 'visible', on: false })); // phone locked from here on
   assert.ok((await cmd('accept')).ok);
   await until((s) => s.readyCheck?.response === 'Accepted', 'accepted');
-  ok('match found -> accepted');
+  ok('match found -> alert shown in the app (no notification while it is open) -> accepted');
 
   await until((s) => s.phase === 'ChampSelect' && s.session?.timer?.phase === 'PLANNING' && s.pickable.length, 'planning');
   const me = () => state.session.myTeam.find((m) => m.cellId === state.session.me);
@@ -196,6 +231,7 @@ try {
   assert.ok((await cmd('lock')).ok);
   await until(() => mine().find((a) => a.type === 'ban').completed, 'ban done');
   ok(`banned ${data.champions.find((c) => c.id === ban).name}`);
+  await soon(() => pushed('Champ select started') && pushed('Your turn to ban'), 'champ select notifications');
 
   await until(() => mine().some((a) => a.type === 'pick' && a.active), 'my pick turn');
   const pick = state.pickable.includes(want) ? want : state.pickable[0];
@@ -204,6 +240,8 @@ try {
   assert.ok((await cmd('lock')).ok);
   await until(() => mine().find((a) => a.type === 'pick').completed && me().championId === pick, 'locked');
   ok(`locked in ${data.champions.find((c) => c.id === pick).name}`);
+  await soon(() => pushed('Your turn to pick'), 'pick notification');
+  ok('notifications with the phone locked: champ select started, your turn to ban, your turn to pick');
 
   assert.ok((await cmd('spells', { spell1Id: 12, spell2Id: 4 })).ok);
   await until(() => me().spell1Id === 12 && me().spell2Id === 4, 'spells');
@@ -216,6 +254,7 @@ try {
   assert.ok((await cmd('swap', { kind: 'trade', swapId: offer.id, action: 'accept' })).ok);
   await until(() => me().championId === theirChamp, 'traded');
   ok(`swaps: accepted a teammate's trade for ${data.champions.find((c) => c.id === theirChamp).name}`);
+  assert.equal(pushes.filter((p) => p.title === 'Champion trade offer').length, 1, 'one trade notification');
 
   await until((s) => s.phase === 'InProgress', 'in game');
   ok('champ select finished -> in game');
@@ -224,6 +263,7 @@ try {
   ok(`live game: loaded and timer running (${state.live.gameTime}s)`);
   await until((s) => s.live?.afkRisk, 'afk risk');
   ok(`live game: AFK risk flagged at ${state.live.gameTime}s with nothing bought`);
+  await soon(() => pushed('Game loaded') && pushed('AFK warning coming'), 'game notifications');
 
   // ARAM: bench + reroll
   await until((s) => s.phase === 'Lobby', 'back to lobby');
@@ -256,6 +296,9 @@ try {
   assert.ok((await cmd('acceptInvite', { invitationId: inv.id })).ok);
   await until((s) => s.phase === 'Lobby' && s.lobby?.queueId === inv.queueId && !s.lobby.isLeader && !s.invites.length, 'joined friend lobby');
   ok(`accepted ${inv.from}’s invite into their lobby`);
+  await soon(() => pushes.some((p) => p.title === 'Party invite' && p.body.includes(inv.from)), 'invite notification');
+  assert.equal(pushes.filter((p) => p.title === 'Party invite').length, 1, 'one notification per invite');
+  ok(`notifications: party invite from ${inv.from}, game loaded, AFK warning, trade offer`);
 
   assert.ok((await cmd('leaveLobby')).ok);
   await until((s) => s.phase === 'None', 'left again');
