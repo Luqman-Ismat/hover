@@ -466,15 +466,24 @@ export class ClientState extends EventEmitter {
         const mine = this.#myActions();
         const action = mine.find((a) => a.isInProgress) || mine.find((a) => a.type === 'pick');
         if (!action) throw new Error('Nothing to pick right now');
-        const pool = action.type === 'ban' ? this.s.bannable : this.s.pickable;
-        if (pool.length && !pool.includes(championId)) throw new Error('That champion isn’t available');
+        // Picks are checked against what you can play. Bans go straight to the client, which knows
+        // best (its bannable list isn't always the full set you're allowed to ban).
+        if (action.type === 'pick' && this.s.pickable.length && !this.s.pickable.includes(championId)) throw new Error('That champion isn’t available');
         return this.#call('PATCH', `/lol-champ-select/v1/session/actions/${action.id}`, { championId });
       }
       case 'lock': {
         const action = this.#myActions().find((a) => a.isInProgress);
         if (!action) throw new Error('It isn’t your turn');
-        if (!action.championId) throw new Error('Choose a champion first');
-        return this.#call('POST', `/lol-champ-select/v1/session/actions/${action.id}/complete`);
+        // Lock exactly what the phone shows, even if the hover hadn't reached the client yet.
+        const championId = int(msg.championId) || action.championId;
+        if (!championId) throw new Error('Choose a champion first');
+        const url = `/lol-champ-select/v1/session/actions/${action.id}`;
+        // What the client itself does: set the champion and complete the action in one go.
+        const first = await this.lcu.request('PATCH', url, { championId, completed: true });
+        if (first.status < 400) return null;
+        this.emit('log', `Lock via PATCH refused (${first.status} ${first.data?.message || ''}); trying /complete`);
+        await this.lcu.request('PATCH', url, { championId });
+        return this.#call('POST', `${url}/complete`);
       }
       case 'spells': {
         const spell1Id = int(msg.spell1Id), spell2Id = int(msg.spell2Id);

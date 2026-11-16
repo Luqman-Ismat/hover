@@ -464,7 +464,9 @@ const server = http.createServer(async (req, res) => {
     if (!S.session) return err(res, 404, 'No active delegate');
     const lockedPicks = new Set(S.session.actions.flat().filter((a) => a.type === 'pick' && a.completed).map((a) => a.championId));
     const banned = new Set([...S.session.bans.myTeamBans, ...S.session.bans.theirTeamBans, ...S.session.actions.flat().filter((a) => a.type === 'ban' && a.completed).map((a) => a.championId)]);
-    return reply(res, 200, champIds.filter((c) => !banned.has(c) && !(lockedPicks.has(c) && p.includes('pickable'))));
+    // Like the real client, the bannable list can be shorter than what you may actually ban.
+    const list = p.includes('bannable') ? champIds.slice(0, Math.ceil(champIds.length / 2)) : champIds;
+    return reply(res, 200, list.filter((c) => !banned.has(c) && !(lockedPicks.has(c) && p.includes('pickable'))));
   }
 
   if (m === 'DELETE' && p === URIS.lobby) {
@@ -602,11 +604,14 @@ const server = http.createServer(async (req, res) => {
     const a = S.session.actions.flat().find((x) => x.id === Number(actionMatch[1]));
     if (!a || a.actorCellId !== ME || a.completed) return err(res, 400, 'Invalid action');
     if (m === 'PATCH') {
-      const { championId } = await body(req);
+      const { championId, completed } = await body(req);
       if (taken().has(championId) && championId !== a.championId && a.type === 'pick') return err(res, 400, 'Champion unavailable');
+      if (completed && !a.isInProgress) return err(res, 400, 'Not your turn');
       a.championId = championId;
       if (a.type === 'pick') { if (a.isInProgress) me.championId = championId; else me.championPickIntent = championId; }
-      touchSession();
+      // Like the real client: { championId, completed: true } locks in one call.
+      if (completed) complete(a, S.session.actions.findIndex((g) => g.includes(a)));
+      else touchSession();
       return reply(res, 204);
     }
     if (m === 'POST' && actionMatch[2]) {

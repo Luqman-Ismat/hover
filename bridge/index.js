@@ -89,6 +89,7 @@ function pushNotify(a) {
   }).then((r) => r.ok).catch(() => false);
 }
 for (const kind of Object.keys(ALERTS)) client.on(kind, (arg) => alert(kind, arg));
+client.on('log', (line) => log(line));
 
 // Phone-side notification settings.
 function notifyInfo() {
@@ -273,6 +274,7 @@ wss.on('connection', (ws) => {
       // Only read commands hand data back; everything else is just ok/error.
       ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: true, ...(RETURNS_DATA.has(msg.type) ? { data: out } : {}) }));
     } catch (err) {
+      log(`${String(msg?.type).slice(0, 30)} failed: ${err.message}`);
       ws.send(JSON.stringify({ type: 'result', id: msg.id, ok: false, error: err.message }));
     }
   });
@@ -369,9 +371,15 @@ function lanAddress() {
   return pref?.address || 'localhost';
 }
 
+// Also kept in ~/.hover/hover.log (last ~1 MB), so problems with the real client can be looked at later.
+const LOG_FILE = path.join(HOME, 'hover.log');
 function log(line) {
   const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   console.log(`  ${t}  ${line}`);
+  try {
+    if ((fs.statSync(LOG_FILE, { throwIfNoEntry: false })?.size || 0) > 1_000_000) fs.renameSync(LOG_FILE, `${LOG_FILE}.old`);
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${line}\n`);
+  } catch {}
 }
 
 server.on('error', (err) => {

@@ -225,21 +225,22 @@ try {
   ok(`lock before your turn refused ("${early.error}")`);
 
   await until(() => mine().some((a) => a.type === 'ban' && a.active), 'my ban turn');
-  const ban = state.bannable.find((id) => id !== want);
+  // The client's bannable list is short in the mock (as it can be for real); bans outside it still work.
+  const ban = data.champions.map((c) => c.id).find((id) => id !== want && !state.bannable.includes(id));
+  assert.ok(ban, 'a champion missing from the bannable list');
   assert.ok((await cmd('hover', { championId: ban })).ok);
   await until(() => mine().find((a) => a.type === 'ban').championId === ban, 'ban hover');
-  assert.ok((await cmd('lock')).ok);
+  assert.ok((await cmd('lock', { championId: ban })).ok);
   await until(() => mine().find((a) => a.type === 'ban').completed, 'ban done');
-  ok(`banned ${data.champions.find((c) => c.id === ban).name}`);
+  ok(`banned ${data.champions.find((c) => c.id === ban).name}, who wasn't on the client's bannable list`);
   await soon(() => pushed('Champ select started') && pushed('Your turn to ban'), 'champ select notifications');
 
   await until(() => mine().some((a) => a.type === 'pick' && a.active), 'my pick turn');
-  const pick = state.pickable.includes(want) ? want : state.pickable[0];
-  assert.ok((await cmd('hover', { championId: pick })).ok);
-  await until(() => mine().find((a) => a.type === 'pick').championId === pick, 'pick hover');
-  assert.ok((await cmd('lock')).ok);
+  const pick = state.pickable.find((id) => id !== want) ?? want;
+  // Lock straight from the phone's selection, even though the client still has the declared pick.
+  assert.ok((await cmd('lock', { championId: pick })).ok);
   await until(() => mine().find((a) => a.type === 'pick').completed && me().championId === pick, 'locked');
-  ok(`locked in ${data.champions.find((c) => c.id === pick).name}`);
+  ok(`locked in ${data.champions.find((c) => c.id === pick).name} in one call (set + complete)`);
   await soon(() => pushed('Your turn to pick'), 'pick notification');
   ok('notifications with the phone locked: champ select started, your turn to ban, your turn to pick');
 

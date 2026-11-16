@@ -1,4 +1,5 @@
 import { html, render, useState, useEffect, useRef } from '/vendor/preact.js';
+import { positionsOf } from '/positions.js';
 
 // ---------------------------------------------------------------------------
 // Bridge connection + tiny store
@@ -83,7 +84,7 @@ function toast(text) {
 function indexData(d) {
   return {
     champs: new Map(d.champions.map((c) => [c.id, c])),
-    list: d.champions,
+    list: d.champions.map((c) => ({ ...c, positions: positionsOf(c.alias) })),
     spells: new Map(d.spells.map((s) => [s.id, s])),
     spellList: d.spells,
     queues: d.queues,
@@ -122,7 +123,18 @@ const MAPS = [
     bg: `${GM}/ARAM/img/parties-background.jpg`, icon: `${GM}/ARAM/img/game-select-icon-active.png` },
 ];
 const mapOf = (qid) => MAPS.find((m) => m.queues.includes(qid)) || MAPS[0];
-const ROLES = [['', 'All'], ['assassin', 'Assassin'], ['fighter', 'Fighter'], ['mage', 'Mage'], ['marksman', 'Marksman'], ['support', 'Support'], ['tank', 'Tank']];
+const ROLES = [['assassin', 'Assassin'], ['fighter', 'Fighter'], ['mage', 'Mage'], ['marksman', 'Marksman'], ['support', 'Support'], ['tank', 'Tank']];
+const LANE_FILTERS = [['', 'All'], ['TOP', 'Top'], ['JUNGLE', 'Jungle'], ['MIDDLE', 'Mid'], ['BOTTOM', 'Bot'], ['UTILITY', 'Sup']];
+
+// Favourite champions, kept on this phone. Long-press a champion to star it.
+const FAV_KEY = 'hover.favorites';
+const favorites = new Set((() => { try { return JSON.parse(localStorage.getItem(FAV_KEY)) || []; } catch { return []; } })());
+function toggleFavorite(id) {
+  const on = !favorites.has(id);
+  if (on) favorites.add(id); else favorites.delete(id);
+  try { localStorage.setItem(FAV_KEY, JSON.stringify([...favorites])); } catch {}
+  return on;
+}
 
 function useTicker(ms = 200) {
   const [, f] = useState(0);
@@ -161,6 +173,8 @@ function chime() {
 }
 
 const Icon = {
+  star: html`<svg viewBox="0 0 20 20" width="12" height="12" aria-hidden="true"><path d="M10 2.2l2.4 5 5.4.6-4 3.7 1.1 5.4L10 14.2l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6Z" fill="currentColor"/></svg>`,
+  grid: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4zM11 11h5v5h-5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   bell: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 2.8c-2.8 0-4.8 2.1-4.8 4.9v2.7L3.6 13.3h12.8l-1.6-2.9V7.7c0-2.8-2-4.9-4.8-4.9Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 15.6a2.1 2.1 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
   copy: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="6.5" y="6.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.5 4.5v-.5a1.5 1.5 0 0 0-1.5-1.5H5A1.5 1.5 0 0 0 3.5 4v7A1.5 1.5 0 0 0 5 12.5h.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`,
   search: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.2 13.2 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
@@ -760,14 +774,20 @@ function ChampSelect({ s }) {
   const d = deriveDraft(s);
   const { sess, current, me } = d;
   const [query, setQuery] = useState('');
-  const [role, setRole] = useState('');
+  const [role, setRole] = useState('');     // class: assassin, mage…
+  const [lane, setLane] = useState('');     // position: TOP, JUNGLE…
+  const [favOnly, setFavOnly] = useState(false);
+  const [, bump] = useState(0);
   const [optimistic, setOptimistic] = useState(null);
   const [spellSlot, setSpellSlot] = useState(0); // 0 closed, 1 = D, 2 = F
   const [swapCell, setSwapCell] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const banning = current?.type === 'ban';
-  const pool = new Set(banning ? s.bannable : s.pickable);
+  // Picks: what the client says you can play. Bans: every champion that isn't banned yet
+  // (the client's bannable list can be shorter than the real choice).
+  const banned = new Set([...(sess.bans?.mine || []), ...(sess.bans?.theirs || []), ...d.flat.filter((a) => a.type === 'ban' && a.completed && a.championId > 0).map((a) => a.championId)]);
+  const pool = new Set(banning ? [] : s.pickable);
   const selected = optimistic ?? d.selected;
   useEffect(() => { if (optimistic && d.selected === optimistic) setOptimistic(null); }, [d.selected]);
   // A new turn starts with a clean list.
@@ -793,15 +813,32 @@ function ChampSelect({ s }) {
     const r = await send('hover', { championId: id });
     if (!r.ok) setOptimistic(null);
   };
-  const lock = async () => { setBusy(true); const r = await send('lock'); setBusy(false); if (r.ok) navigator.vibrate?.([20, 40, 60]); };
+  const lock = async () => {
+    setBusy(true);
+    const r = await send('lock', { championId: selected });
+    setBusy(false);
+    if (r.ok) navigator.vibrate?.([20, 40, 60]);
+  };
+  // Long-press a champion to star it as a favourite.
+  const press = useRef(null);
+  const holdStart = (id) => { clearTimeout(press.current?.t); press.current = { id, fired: false, t: setTimeout(() => { press.current.fired = true; navigator.vibrate?.(15); toast(toggleFavorite(id) ? `${champName(id)} added to favourites` : `${champName(id)} removed from favourites`); bump((n) => n + 1); }, 450) }; };
+  const holdEnd = () => clearTimeout(press.current?.t);
+  const tap = (id) => { if (press.current?.fired && press.current.id === id) { press.current = null; return; } hover(id); };
 
   const showPool = !d.aram && !sess.spectating && !d.pickDone && d.phase !== 'FINALIZATION' && d.phase !== 'GAME_STARTING';
   const q = fold(query);
-  // Show what you can take, plus already-taken champions (dimmed). Unowned ones stay hidden.
+  // Picks show what you can play plus taken champions (dimmed); unowned ones stay hidden.
+  // Bans show everyone. Favourites come first.
+  const available = (c) => (banning ? !banned.has(c.id) : pool.size ? pool.has(c.id) : !d.locked.has(c.id));
   const list = (store.data?.list || []).filter((c) =>
-    (!pool.size || pool.has(c.id) || d.locked.has(c.id)) &&
+    (banning || !pool.size || pool.has(c.id) || d.locked.has(c.id)) &&
+    (!lane || c.positions?.includes(lane)) &&
     (!role || c.roles?.includes(role)) &&
-    (!q || fold(c.name).includes(q) || fold(c.alias).includes(q)));
+    (!favOnly || favorites.has(c.id)) &&
+    (!q || fold(c.name).includes(q) || fold(c.alias).includes(q)))
+    .sort((a, b) => (favorites.has(b.id) - favorites.has(a.id)) || (available(b) - available(a)));
+  const filtered = lane || role || favOnly;
+  const clearFilters = () => { setLane(''); setRole(''); setFavOnly(false); setQuery(''); };
 
   let dock;
   const name = champName(selected);
@@ -838,22 +875,31 @@ function ChampSelect({ s }) {
                 onInput=${(e) => setQuery(e.target.value)} autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" />
               ${query && html`<button class="clear" onClick=${() => setQuery('')} aria-label="Clear search">${Icon.x}</button>`}
             </label>
-            <div class="roles" role="tablist" aria-label="Filter by role">
-              ${ROLES.map(([k, label]) => html`<button role="tab" aria-selected=${role === k} class=${cx('role', role === k && 'on')} onClick=${() => setRole(k)}>${label}</button>`)}
+            <div class="lanes" role="tablist" aria-label="Filter by position">
+              ${LANE_FILTERS.map(([k, label]) => html`
+                <button role="tab" aria-selected=${lane === k} class=${cx('lane', lane === k && 'on', k && k.toLowerCase() === me.assignedPosition && 'mine')} onClick=${() => setLane(k)}>
+                  ${k ? html`<${RoleGlyph} role=${k} size=${20} />` : html`<span class="lane-all">${Icon.grid}</span>`}<span>${label}</span>
+                </button>`)}
+            </div>
+            <div class="roles" aria-label="More filters">
+              <button class=${cx('role fav', favOnly && 'on')} aria-pressed=${favOnly} onClick=${() => setFavOnly(!favOnly)}>${Icon.star}<span>Favourites</span></button>
+              ${ROLES.map(([k, label]) => html`<button aria-pressed=${role === k} class=${cx('role', role === k && 'on')} onClick=${() => setRole(role === k ? '' : k)}>${label}</button>`)}
             </div>
           </div>
           <ul class="grid">
             ${list.map((c) => {
-              const ok = pool.size ? pool.has(c.id) : !d.locked.has(c.id);
+              const ok = available(c);
               return html`
                 <li key=${c.id}>
-                  <button class=${cx('champ', selected === c.id && 'on')} disabled=${!ok} onClick=${() => hover(c.id)}>
-                    <span class="champ-face"><img src=${asset(c.icon)} alt="" loading="lazy" decoding="async" /></span>
+                  <button class=${cx('champ', selected === c.id && 'on')} disabled=${!ok} onClick=${() => tap(c.id)}
+                    onTouchStart=${() => holdStart(c.id)} onTouchEnd=${holdEnd} onTouchMove=${holdEnd} onTouchCancel=${holdEnd} onContextMenu=${(e) => e.preventDefault()}>
+                    <span class="champ-face"><img src=${asset(c.icon)} alt="" loading="lazy" decoding="async" />${favorites.has(c.id) && html`<i class="fav-badge">${Icon.star}</i>`}</span>
                     <span class="champ-name">${c.name}</span>
                   </button>
                 </li>`;
             })}
-            ${!list.length && html`<li class="none">No champion matches${query ? ` “${query}”` : ' that role'}.</li>`}
+            ${!list.length && html`<li class="none">${favOnly && !favorites.size ? 'No favourites yet. Press and hold a champion to star it.' : html`No champion matches${query ? ` “${query}”` : ' these filters'}.`}
+              ${(filtered || query) && html`<button class="btn glass sm" onClick=${clearFilters}>Clear filters</button>`}</li>`}
           </ul>
         </section>`}
 
