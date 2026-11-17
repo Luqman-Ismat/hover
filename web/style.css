@@ -467,7 +467,7 @@ button.slot-face:active:not(:disabled) { transform: scale(0.96); }
   background: rgba(1, 10, 19, 0.85); color: var(--gold); border: 1px solid var(--gold-deep);
 }
 
-.pool { margin: 0 calc(var(--pad) * -1); padding: 4px var(--pad) 0; display: grid; gap: 14px; }
+.pool { margin: 0 calc(var(--pad) * -1); padding: 4px var(--pad) 0; display: grid; gap: 14px; align-content: start; min-height: 100dvh; }
 .pool-tools {
   position: sticky; top: 0; z-index: 3;
   margin: 0 calc(var(--pad) * -1); padding: calc(var(--safe-t) + 8px) var(--pad) 10px;
@@ -598,16 +598,7 @@ button.member:active:not(:disabled) { transform: scale(0.97); }
 .member.invited .member-face { border-color: rgba(10, 200, 185, 0.4); background: none; }
 
 /* ---------- roles ---------- */
-.role-glyph { flex: none; }
-.rg-dim { fill: none; stroke: rgba(200, 170, 110, 0.32); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.rg-on { fill: none; stroke: var(--gold-hi); stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 2px rgba(200, 170, 110, 0.8)); }
-.rg-fill { fill: var(--gold); }
-.rg-cut { fill: none; stroke: var(--ink); stroke-width: 1.4; stroke-linecap: round; }
-.rg-gem { fill: var(--ink); }
-.r-utility .rg-gem { fill: #0d2a38; stroke: var(--teal); stroke-width: 1.2; }
-.r-fill .rg-fill { fill: var(--teal); filter: drop-shadow(0 0 3px rgba(10, 200, 185, 0.6)); }
-.rg-none { fill: none; stroke: var(--faint); stroke-width: 1.5; stroke-dasharray: 2.5 2.5; stroke-linecap: round; }
-.rg-none + .rg-none { stroke-dasharray: none; }
+.role-glyph { flex: none; display: block; object-fit: contain; -webkit-user-drag: none; user-select: none; pointer-events: none; }
 .roles-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .role-slot {
   display: flex; align-items: center; gap: 12px; padding: 10px 12px; text-align: left; border-radius: var(--r);
@@ -686,8 +677,15 @@ button.member:active:not(:disabled) { transform: scale(0.97); }
 .page-flag.dim { color: var(--faint); }
 .page-edit { width: 48px; height: auto; flex: none; border: 0; border-left: 1px solid var(--line-soft); background: none; color: var(--gold); }
 
-.editor { gap: 14px; padding-bottom: calc(var(--safe-b) + 190px); }
-.editor .dock { background: linear-gradient(to top, var(--ink) 82%, rgba(1, 10, 19, 0)); padding-top: 36px; }
+.editor { gap: 14px; }
+/* Inside a scrolling panel a fixed dock would ride along with the panel (its slide-in and blur
+   make it the dock's frame in Safari), so pin the dock to the panel's bottom instead. */
+.modesel:has(> .dock) { padding-bottom: 0; }
+.modesel > .dock {
+  position: sticky; bottom: 0; left: auto; transform: none; width: auto;
+  margin: auto calc(var(--pad) * -1) 0; flex: none;
+}
+.editor > .dock { background: linear-gradient(to top, var(--ink) 80%, rgba(1, 10, 19, 0)); padding-top: 30px; }
 .page-trees { text-overflow: ellipsis; }
 .page.on .page-flag { position: absolute; top: 6px; right: 56px; font-size: 9px; }
 .page { position: relative; }
@@ -776,7 +774,7 @@ button.member:active:not(:disabled) { transform: scale(0.97); }
 }
 .lane:active { transform: scale(0.92); transition-duration: 90ms; }
 .lane .role-glyph, .lane-all { opacity: 0.75; transition: opacity 200ms; }
-.lane-all { display: grid; place-items: center; width: 20px; height: 20px; color: var(--gold); }
+.lane-all { display: grid; place-items: center; width: 22px; height: 22px; color: var(--gold); }
 .lane.on { color: var(--gold-hi); background: linear-gradient(180deg, rgba(200, 170, 110, 0.24), rgba(200, 170, 110, 0.06)); box-shadow: inset 0 0 0 1px var(--gold-deep); }
 .lane.on .role-glyph, .lane.on .lane-all { opacity: 1; }
 .lane.mine::after { content: ''; position: absolute; top: 5px; right: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 6px var(--teal); }
@@ -863,3 +861,68 @@ html { scroll-behavior: smooth; }
   .bd-img.top { opacity: 1; }
   .embers { display: none; }
 }
+
+/* ---------- rune trees in their client colours ---------- */
+.tree { --tree: var(--gold); }
+.tree-name { display: flex; align-items: center; gap: 8px; color: var(--tree); }
+.tree-name img { width: 22px; height: 22px; object-fit: contain; }
+.tree-tab { --tree: var(--gold); }
+.tree-tab.on { border-color: var(--tree); box-shadow: 0 0 14px -2px var(--tree); }
+.perk.on { border-color: var(--tree); box-shadow: 0 0 0 1px var(--tree), 0 0 16px -2px var(--tree); }
+.perk.big.on { box-shadow: none; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--tree) 70%, transparent)); }
+.perk.idle img { filter: grayscale(0.85) brightness(0.85); }
+.perk.idle.big img { filter: grayscale(0.7) brightness(0.9); }
+.perk.dim { opacity: 0.35; }
+.shards-tree .perk.on { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), 0 0 12px -2px var(--gold); }
+
+/* ---------- skins ---------- */
+.skin-chip {
+  justify-self: start; margin-top: 8px;
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px 0 12px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold-hi);
+  background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border: 1px solid var(--line);
+  transition: transform 260ms var(--spring), border-color 200ms;
+}
+.skin-chip svg:last-child { width: 14px; height: 14px; color: var(--gold); }
+.skin-chip:active { transform: scale(0.95); transition-duration: 90ms; }
+.skin-strip {
+  display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain;
+  margin: 0 calc(var(--pad) * -1); padding: 4px var(--pad) 10px; scroll-padding-inline: var(--pad); scrollbar-width: none;
+}
+.skin-strip::-webkit-scrollbar { display: none; }
+.skin-strip li { flex: none; scroll-snap-align: center; }
+.skin-card {
+  position: relative; display: block; width: 132px; aspect-ratio: 308 / 560; overflow: hidden; border-radius: var(--r);
+  background: rgba(1, 10, 19, 0.8); border: 1px solid var(--line-soft);
+  transition: transform 260ms var(--spring), border-color 200ms, box-shadow 240ms;
+}
+.skin-card img { width: 100%; height: 100%; object-fit: cover; }
+.skin-card::after { content: ''; position: absolute; inset: 55% 0 0; background: linear-gradient(to top, rgba(1, 10, 19, 0.95), rgba(1, 10, 19, 0)); }
+.skin-name {
+  position: absolute; inset: auto 8px 8px; z-index: 1; text-align: left;
+  font-size: 12.5px; font-weight: 700; line-height: 1.25; color: var(--gold-hi);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.skin-card:active { transform: scale(0.96); transition-duration: 90ms; }
+.skin-card.on { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), 0 0 22px -4px var(--gold); }
+.skin-card.locked img { filter: grayscale(1) brightness(0.45); }
+.skin-card.locked .skin-name { color: var(--muted); }
+.skin-lock { position: absolute; top: 8px; right: 8px; z-index: 1; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); background: rgba(1, 10, 19, 0.8); border: 1px solid var(--line-soft); }
+.chromas-label { margin-top: 4px; }
+.chromas { display: flex; align-items: center; gap: 10px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(var(--pad) * -1); padding: 4px var(--pad) 8px; }
+.chromas::-webkit-scrollbar { display: none; }
+.chroma { flex: none; }
+.chroma {
+  width: 30px; height: 30px; border-radius: 50%; background: var(--c);
+  border: 2px solid rgba(1, 10, 19, 0.9); box-shadow: 0 0 0 1px var(--line);
+  transition: transform 220ms var(--spring), box-shadow 200ms;
+}
+.chroma.base { background: conic-gradient(var(--gold-hi), var(--gold), var(--gold-deep), var(--gold-hi)); }
+.chroma.on { box-shadow: 0 0 0 2px var(--gold-hi), 0 0 12px var(--gold); transform: scale(1.08); }
+.chroma.locked { opacity: 0.3; }
+.chroma:active { transform: scale(0.9); }
+
+/* While typing a search, the dock steps aside so it doesn't sit on the results above the keyboard. */
+.draft .dock { transition: opacity 180ms var(--ease), translate 220ms var(--ease); }
+.draft.searching .dock { opacity: 0; translate: 0 24px; pointer-events: none; }
+.sheet-note.tight { padding: 0 0 12px; margin-top: -6px; }

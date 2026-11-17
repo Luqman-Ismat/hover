@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/icon-512.png" width="96" alt="Hover icon">
+<img src="docs/icon.png" width="112" alt="Hover icon">
 
 # Hover
 
@@ -14,9 +14,10 @@ Free · No account needed · Nothing to install on your phone
 
 <br>
 
-<img src="docs/lobby.png" width="250" alt="The lobby on a phone: pick roles and invite friends"> &nbsp;
-<img src="docs/champ-select.png" width="250" alt="Champ select on a phone: your team, the enemy team and your ban"> &nbsp;
-<img src="docs/champions.png" width="250" alt="The champion grid with search and role filters">
+<img src="docs/lobby.png" width="200" alt="The lobby: League's role icons and party slots"> &nbsp;
+<img src="docs/search.png" width="200" alt="Searching champions, with the lock-in button"> &nbsp;
+<img src="docs/champ-select.png" width="200" alt="Champ select in your chosen skin's splash art"> &nbsp;
+<img src="docs/skins.png" width="200" alt="Choosing a skin and chroma">
 
 </div>
 
@@ -26,9 +27,9 @@ Free · No account needed · Nothing to install on your phone
 
 - 🎮 **Lobby:** pick a game mode, invite friends, accept party invites and choose your roles.
 - ✅ **Queue:** find a match and accept it when it pops.
-- ⚔️ **Champ select:** ban, pick and lock in. Search champions and filter by lane, class or favourites (press and hold a champion to make it a favourite).
+- ⚔️ **Champ select:** ban, pick and lock in. Search champions and filter by lane, class or favourites (press and hold a champion to make it a favourite). Your champion's splash art fills the screen in the skin you picked.
 - 🔁 **Trades:** swap picks or positions with teammates, and accept their offers.
-- 📖 **Loadout:** change summoner spells, skins and rune pages.
+- 🎨 **Loadout:** choose your skin and chroma, change summoner spells, and switch or edit rune pages.
 - 🔔 **Alerts:** your phone buzzes for party invites, match found, your turn to pick or ban, when 10 seconds are left, and when the game has loaded. It can even notify you when your phone is locked (see [step 4](#step-4-optional-get-notifications-when-your-phone-is-locked)).
 
 ---
@@ -178,7 +179,8 @@ The mock (`mock/lcu.js`) simulates the client: friends and invites, a ranked dra
 
 - `bridge/lcu.js` reads the client's credentials and talks to its local HTTPS API and event WebSocket.
 - `bridge/state.js` mirrors the lobby, party, queue, ready check, champ select, rune pages and live game. It turns phone intents (`hover`, `lock`, `swap`, `runeSave`, …) into client calls. The phone can't send arbitrary endpoints.
-- `bridge/index.js` handles pairing, serves the web app, proxies game art, sends notifications and runs the phone's WebSocket.
+- `bridge/index.js` handles pairing, serves the web app, proxies game art (including each skin's splash), sends notifications and runs the phone's WebSocket.
+- `web/roles/` holds League's own position icons; `scripts/icons.py` draws Hover's app, tray and home-screen icons.
 - `web/` is a Preact app with no build step.
 - `desktop/main.js` is the desktop app: it runs the bridge, shows the Connect window and keeps Hover in the menu bar or system tray.
 

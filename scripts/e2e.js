@@ -248,6 +248,24 @@ try {
   await until(() => me().spell1Id === 12 && me().spell2Id === 4, 'spells');
   ok('spells set to Teleport + Flash');
 
+  // Skins: the carousel, wearing an owned skin, refusing one you don't own, and its splash art.
+  const skins = (await cmd('skins')).data;
+  assert.ok(Array.isArray(skins) && skins.length > 1 && skins.some((k) => k.base), 'skins listed');
+  const wear = skins.find((k) => k.owned && !k.base);
+  assert.ok(wear, 'an owned skin to wear');
+  assert.equal(me().skinId, pick * 1000, 'starts on the base skin');
+  assert.ok((await cmd('skin', { skinId: wear.id })).ok);
+  await until(() => me().skinId === wear.id, 'skin selected');
+  const notOwned = skins.find((k) => !k.owned);
+  if (notOwned) assert.equal((await cmd('skin', { skinId: notOwned.id })).ok, false);
+  for (const k of ['splash', 'load']) {
+    const a = await fetch(`${base}/art?id=${pick}&k=${k}&skin=${wear.id}`, { headers: { cookie } });
+    const b = await fetch(`${base}/art?id=${pick}&k=${k}`, { headers: { cookie } });
+    assert.equal(a.status, 200, `${k} art for the skin`);
+    assert.notDeepEqual(Buffer.from(await a.arrayBuffer()), Buffer.from(await b.arrayBuffer()), `${k} art differs from the base skin`);
+  }
+  ok(`skins: wearing ${wear.name}, with its own splash and loading art`);
+
   // A teammate offers a champion trade during finalization.
   await until(() => state.session?.swaps?.trade.some((x) => x.state === 'RECEIVED'), 'incoming trade');
   const offer = state.session.swaps.trade.find((x) => x.state === 'RECEIVED');

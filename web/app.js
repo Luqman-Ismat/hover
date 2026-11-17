@@ -81,6 +81,7 @@ function toast(text) {
   }, 3200);
 }
 
+const TREE_ORDER = [8000, 8100, 8200, 8400, 8300];
 function indexData(d) {
   return {
     champs: new Map(d.champions.map((c) => [c.id, c])),
@@ -88,7 +89,8 @@ function indexData(d) {
     spells: new Map(d.spells.map((s) => [s.id, s])),
     spellList: d.spells,
     queues: d.queues,
-    styles: d.runes?.styles || [],
+    // Trees in the client's order: Precision, Domination, Sorcery, Resolve, Inspiration.
+    styles: [...(d.runes?.styles || [])].sort((a, b) => TREE_ORDER.indexOf(a.id) - TREE_ORDER.indexOf(b.id)),
     styleMap: new Map((d.runes?.styles || []).map((s) => [s.id, s])),
     perks: new Map((d.runes?.perks || []).map((p) => [p.id, p])),
   };
@@ -98,7 +100,7 @@ function indexData(d) {
 // Helpers
 // ---------------------------------------------------------------------------
 const asset = (p) => (p ? `/asset?p=${encodeURIComponent(p)}` : '');
-const art = (id, k = 'splash') => (id > 0 ? `/art?id=${id}&k=${k}` : '');
+const art = (id, k = 'splash', skin = 0) => (id > 0 ? `/art?id=${id}&k=${k}${skin > 0 ? `&skin=${skin}` : ''}` : '');
 const champIcon = (id) => (id > 0 ? asset(store.data?.champs.get(id)?.icon || `/lol-game-data/assets/v1/champion-icons/${id}.png`) : '');
 const champName = (id) => store.data?.champs.get(id)?.name || '';
 const fold = (s) => s.normalize('NFD').replace(/[^a-z0-9]/gi, '').toLowerCase();
@@ -189,15 +191,16 @@ const Icon = {
   trash: html`<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M5 6h10M8 6V4h4v2M6.5 6l.7 10h5.6l.7-10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`,
   back: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   arrow: html`<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  brush: html`<svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true"><path d="M16.5 3.5c-2.6 1.4-6 4.6-7.6 6.9l1.7 1.7c2.3-1.6 5.5-5 6.9-7.6Z" fill="currentColor"/><path d="M7.8 11.6c-1.6 0-2.8 1.2-2.8 2.7 0 .9-.6 1.6-1.5 1.9 2.8 1.2 6.6.4 6.6-2.4Z" fill="currentColor" opacity=".75"/></svg>`,
+  lock: html`<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="2" fill="currentColor"/><path d="M7 9V7a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>`,
   swords: html`<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 4l9.5 9.5M20 4l-9.5 9.5M6.5 15.5l2 2M17.5 15.5l-2 2M4.5 19.5l3-3M19.5 19.5l-3-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
 };
 
 const Logo = () => html`
   <span class="logo" aria-label="Hover">
     <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-      <circle cx="16" cy="16" r="10.5" fill="none" stroke="currentColor" stroke-opacity="0.28" stroke-width="2.6"/>
-      <path d="M16 5.5A10.5 10.5 0 1 1 6.2 19.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
-      <circle cx="16" cy="16" r="3" fill="currentColor"/>
+      <path d="M16 3.5 26.8 9.75v12.5L16 28.5 5.2 22.25V9.75Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+      <path d="M16 10.2l3.4 5.8-3.4 5.8-3.4-5.8Z" fill="var(--teal)"/>
     </svg>
     <span class="logo-word">Hover</span>
   </span>`;
@@ -237,12 +240,15 @@ function Backdrop({ src, tone }) {
 
 // Which champion (and treatment) sits behind each screen.
 // Your last locked champion, kept across reloads so the in-game screen still shows it.
-let lastPick = (() => { try { return Number(sessionStorage.getItem('hover.lastPick')) || 0; } catch { return 0; } })();
-function rememberPick(id) {
-  if (id === lastPick) return;
-  lastPick = id;
-  try { sessionStorage.setItem('hover.lastPick', String(id)); } catch {}
+const readNum = (k) => { try { return Number(sessionStorage.getItem(k)) || 0; } catch { return 0; } };
+let lastPick = readNum('hover.lastPick'), lastSkin = readNum('hover.lastSkin');
+function rememberPick(id, skin = 0) {
+  if (id === lastPick && skin === lastSkin) return;
+  lastPick = id; lastSkin = skin;
+  try { sessionStorage.setItem('hover.lastPick', String(id)); sessionStorage.setItem('hover.lastSkin', String(skin)); } catch {}
 }
+// Your champion's splash in the skin you've picked.
+const pickArt = (k = 'splash') => art(lastPick, k, Math.floor(lastSkin / 1000) === lastPick ? lastSkin : 0);
 // The map is the backdrop everywhere outside champ select; there, your champion takes over.
 function scene(st) {
   const s = st.state;
@@ -253,15 +259,16 @@ function scene(st) {
     case 'Matchmaking': return { src: rift, tone: 'queue' };
     case 'ReadyCheck': return { src: rift, tone: 'ready' };
     case 'ChampSelect': {
-      if (!s.session || !st.data) return { src: lastPick ? art(lastPick) : rift, tone: 'draft' };
+      if (!s.session || !st.data) return { src: lastPick ? pickArt() : rift, tone: 'draft' };
       const d = deriveDraft(s);
       const banning = d.current?.type === 'ban';
       const id = d.selected || d.me.championId || 0;
-      if (!banning && d.me.championId) rememberPick(d.me.championId);
+      if (!banning && d.me.championId) rememberPick(d.me.championId, d.me.skinId);
       const champ = id || lastPick;
-      return { src: champ ? art(champ) : rift, tone: banning ? 'ban' : d.pickDone ? 'locked' : 'draft' };
+      const skin = champ === d.me.championId ? d.me.skinId : champ === lastPick ? lastSkin : 0;
+      return { src: champ ? art(champ, 'splash', skin) : rift, tone: banning ? 'ban' : d.pickDone ? 'locked' : 'draft' };
     }
-    case 'GameStart': case 'InProgress': case 'Reconnect': return { src: lastPick ? art(lastPick) : rift, tone: lastPick ? 'hero' : 'home' };
+    case 'GameStart': case 'InProgress': case 'Reconnect': return { src: lastPick ? pickArt() : rift, tone: lastPick ? 'hero' : 'home' };
     default: return { src: asset(MAPS[0].bg), tone: 'home' };
   }
 }
@@ -507,24 +514,12 @@ const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'Bot',
 const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY', 'FILL'];
 const profileIcon = (id) => asset(`/lol-game-data/assets/v1/profile-icons/${id ?? 29}.jpg`);
 
-// Lane glyphs: a little map square with the lane traced in.
-// Role icons. Lanes are a tiny map with your lane lit; jungle, support and fill get emblems.
-const LANES = { TOP: 'M5 19V5h14', MIDDLE: 'M5.5 18.5 18.5 5.5', BOTTOM: 'M5 19h14V5' };
-const EMBLEMS = {
-  // A fang-like leaf for jungle.
-  JUNGLE: html`<path class="rg-fill" d="M12 2.8c-.9 3.3-5.6 5.4-5.6 10.2 0 2.9 1.9 5 4 5.8L12 21.4l1.6-2.6c2.1-.8 4-2.9 4-5.8 0-4.8-4.7-6.9-5.6-10.2Z" /><path class="rg-cut" d="M12 9v8.2M12 12.4l-2.2-1.6M12 14.6l2.2-1.6" />`,
-  // A crest with a gem for support.
-  UTILITY: html`<path class="rg-fill" d="M12 3 19.2 5.8v5.6c0 4.4-3 7.9-7.2 9.6-4.2-1.7-7.2-5.2-7.2-9.6V5.8Z" /><path class="rg-gem" d="M12 8.2 14.6 12 12 15.8 9.4 12Z" />`,
-  // A four-point star for fill.
-  FILL: html`<path class="rg-fill" d="M12 2.5 14 10l7.5 2-7.5 2-2 7.5-2-7.5-7.5-2 7.5-2Z" />`,
-};
-function RoleGlyph({ role, size = 22 }) {
-  const r = role || 'UNSELECTED';
-  let art;
-  if (LANES[r]) art = html`${Object.entries(LANES).sort(([a], [b]) => (a === r) - (b === r)).map(([k, d]) => html`<path key=${k} d=${d} class=${k === r ? 'rg-on' : 'rg-dim'} />`)}`;
-  else if (EMBLEMS[r]) art = EMBLEMS[r];
-  else art = html`<circle class="rg-none" cx="12" cy="12" r="7.5" /><path class="rg-none" d="M9.5 12h5" />`;
-  return html`<svg class=${cx('role-glyph', `r-${r.toLowerCase()}`)} viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true">${art}</svg>`;
+// Role icons: League's own position icons, in the client's four looks:
+// '' gold (default), 'hover' bright, 'blue' teal (selected) and 'disabled' grey.
+const ROLE_FILE = { TOP: 'top', JUNGLE: 'jungle', MIDDLE: 'middle', BOTTOM: 'bottom', UTILITY: 'utility', FILL: 'fill' };
+function RoleGlyph({ role, size = 22, tone = '' }) {
+  const file = ROLE_FILE[role] || 'unselected';
+  return html`<img class="role-glyph" src=${`/roles/${file}${tone ? `-${tone}` : ''}.png`} width=${size} height=${size} style=${{ width: `${size}px`, height: `${size}px` }} alt="" draggable="false" />`;
 }
 
 function Party({ lobby, onInvite, onMember }) {
@@ -569,7 +564,7 @@ function RolePicker({ me, onPick }) {
         const off = slot === 2 && me.first === 'FILL';
         return html`
           <button key=${slot} class=${cx('role-slot', role !== 'UNSELECTED' && 'set')} disabled=${off} onClick=${() => onPick(slot)}>
-            <${RoleGlyph} role=${off ? 'UNSELECTED' : role} size=${30} />
+            <${RoleGlyph} role=${off ? 'UNSELECTED' : role} size=${30} tone=${off ? 'disabled' : ''} />
             <span class="role-slot-text">
               <span class="role-slot-label">${slot === 1 ? 'Primary' : 'Secondary'}</span>
               <span class="role-slot-name">${off ? 'Not needed' : role === 'UNSELECTED' ? 'Choose' : ROLE_NAMES[role]}</span>
@@ -602,7 +597,7 @@ function RoleSheet({ slot, me, onClose }) {
         ${options.map((r) => html`
           <li key=${r}>
             <button class=${cx('role-opt', r === current && 'on', r === other && 'other')} onClick=${() => choose(r)}>
-              <${RoleGlyph} role=${r} size=${40} />
+              <${RoleGlyph} role=${r} size=${40} tone=${r === current ? 'blue' : ''} />
               <span>${ROLE_NAMES[r]}</span>
             </button>
           </li>`)}
@@ -781,6 +776,8 @@ function ChampSelect({ s }) {
   const [optimistic, setOptimistic] = useState(null);
   const [spellSlot, setSpellSlot] = useState(0); // 0 closed, 1 = D, 2 = F
   const [swapCell, setSwapCell] = useState(null);
+  const [skinsOpen, setSkinsOpen] = useState(false);
+  const [searching, setSearching] = useState(false); // keyboard up on the search box
   const [busy, setBusy] = useState(false);
 
   const banning = current?.type === 'ban';
@@ -823,7 +820,12 @@ function ChampSelect({ s }) {
   const press = useRef(null);
   const holdStart = (id) => { clearTimeout(press.current?.t); press.current = { id, fired: false, t: setTimeout(() => { press.current.fired = true; navigator.vibrate?.(15); toast(toggleFavorite(id) ? `${champName(id)} added to favourites` : `${champName(id)} removed from favourites`); bump((n) => n + 1); }, 450) }; };
   const holdEnd = () => clearTimeout(press.current?.t);
-  const tap = (id) => { if (press.current?.fired && press.current.id === id) { press.current = null; return; } hover(id); };
+  const tap = (id) => {
+    if (press.current?.fired && press.current.id === id) { press.current = null; return; }
+    // Picking from search results puts the keyboard away so the lock-in button is back.
+    if (document.activeElement?.tagName === 'INPUT') document.activeElement.blur();
+    hover(id);
+  };
 
   const showPool = !d.aram && !sess.spectating && !d.pickDone && d.phase !== 'FINALIZATION' && d.phase !== 'GAME_STARTING';
   const q = fold(query);
@@ -836,20 +838,42 @@ function ChampSelect({ s }) {
     (!role || c.roles?.includes(role)) &&
     (!favOnly || favorites.has(c.id)) &&
     (!q || fold(c.name).includes(q) || fold(c.alias).includes(q)))
-    .sort((a, b) => (favorites.has(b.id) - favorites.has(a.id)) || (available(b) - available(a)));
+    // Names that start with the search come first ("ah" finds Ahri before Malzahar).
+    .sort((a, b) => (q && (fold(b.name).startsWith(q) - fold(a.name).startsWith(q))) || (favorites.has(b.id) - favorites.has(a.id)) || (available(b) - available(a)));
   const filtered = lane || role || favOnly;
   const clearFilters = () => { setLane(''); setRole(''); setFavOnly(false); setQuery(''); };
+  // When the list changes under a stuck search bar, bring its first row back into view.
+  // Otherwise a short result list can sit above the screen, hidden behind the search bar.
+  const poolRef = useRef(null);
+  // Tapping into search also lifts the list up so results show above the keyboard.
+  const toTop = (always) => {
+    const el = poolRef.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + scrollY;
+    if (Math.abs(scrollY - top) > 1 && (always === true || scrollY > top)) scrollTo({ top, behavior: 'instant' });
+  };
+  useEffect(() => toTop(searching), [query, lane, role, favOnly]);
+  // Safari scrolls the focused box into view itself while the keyboard opens, so lift the
+  // list once the keyboard has settled (the visual viewport stops resizing).
+  const onSearchFocus = () => {
+    setSearching(true);
+    const vv = window.visualViewport;
+    let t;
+    const settle = () => { clearTimeout(t); t = setTimeout(() => { toTop(true); vv?.removeEventListener('resize', settle); }, 120); };
+    vv?.addEventListener('resize', settle);
+    settle();
+  };
 
   let dock;
   const name = champName(selected);
   if (current && banning) dock = html`<button class="btn danger xl" disabled=${!selected || busy} onClick=${lock}>${selected ? `Ban ${name}` : 'Choose a ban'}</button>`;
   else if (current) dock = html`<button class="btn hex xl" disabled=${!selected || busy} onClick=${lock}>${selected ? `Lock in ${name}` : 'Choose a champion'}</button>`;
   else if (d.aram && sess.rerolls != null) dock = html`<button class="btn glass" disabled=${!sess.rerolls} onClick=${() => send('reroll')}>${Icon.dice}<span>Reroll</span><span class="count">${sess.rerolls} left</span></button>`;
-  else dock = html`<p class="dock-note">${d.pickDone ? (d.phase === 'GAME_STARTING' ? 'Loading in' : 'Locked in. Spells can still change.') : d.phase === 'PLANNING' ? 'Bans start after planning' : 'Waiting for your turn'}</p>`;
+  else dock = html`<p class="dock-note">${d.pickDone ? (d.phase === 'GAME_STARTING' ? 'Loading in' : 'Locked in. Spells, runes and skin can still change.') : d.phase === 'PLANNING' ? 'Bans start after planning' : 'Waiting for your turn'}</p>`;
 
   const pos = POSITIONS[me.assignedPosition];
   return html`
-    <main class=${cx('screen draft', current && 'my-turn', banning && 'banning', urgent && 'urgent', !showPool && 'settled')}>
+    <main class=${cx('screen draft', current && 'my-turn', banning && 'banning', urgent && 'urgent', !showPool && 'settled', searching && showPool && 'searching')}>
       <header class="draft-head">
         <div class="draft-title">
           <p class="eyebrow">${s.queueName || 'Champ select'}${pos ? ` · ${pos}` : ''}</p>
@@ -862,23 +886,23 @@ function ChampSelect({ s }) {
       <${Teams} d=${d} onAlly=${(m) => setSwapCell(m.cellId)} />
       <${Bans} sess=${sess} />
 
-      <${MeCard} d=${d} selected=${selected} banning=${banning} onSpell=${setSpellSlot} />
+      <${MeCard} d=${d} selected=${selected} banning=${banning} onSpell=${setSpellSlot} onSkins=${() => setSkinsOpen(true)} />
 
       ${d.aram && sess.bench && html`<${Bench} bench=${sess.bench} />`}
 
       ${showPool && html`
-        <section class="pool">
+        <section class="pool" ref=${poolRef}>
           <div class="pool-tools">
             <label class="search">
               ${Icon.search}
               <input type="search" placeholder=${banning ? 'Search bans' : 'Search champions'} value=${query}
-                onInput=${(e) => setQuery(e.target.value)} autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" />
+                onInput=${(e) => setQuery(e.target.value)} onFocus=${onSearchFocus} onBlur=${() => setSearching(false)} autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" />
               ${query && html`<button class="clear" onClick=${() => setQuery('')} aria-label="Clear search">${Icon.x}</button>`}
             </label>
             <div class="lanes" role="tablist" aria-label="Filter by position">
               ${LANE_FILTERS.map(([k, label]) => html`
                 <button role="tab" aria-selected=${lane === k} class=${cx('lane', lane === k && 'on', k && k.toLowerCase() === me.assignedPosition && 'mine')} onClick=${() => setLane(k)}>
-                  ${k ? html`<${RoleGlyph} role=${k} size=${20} />` : html`<span class="lane-all">${Icon.grid}</span>`}<span>${label}</span>
+                  ${k ? html`<${RoleGlyph} role=${k} size=${22} tone=${lane === k ? 'hover' : ''} />` : html`<span class="lane-all">${Icon.grid}</span>`}<span>${label}</span>
                 </button>`)}
             </div>
             <div class="roles" aria-label="More filters">
@@ -906,6 +930,7 @@ function ChampSelect({ s }) {
       <footer class="dock">${dock}</footer>
 
       ${spellSlot > 0 && html`<${SpellSheet} slot=${spellSlot} me=${me} mode=${s.gameMode || (d.aram ? 'ARAM' : 'CLASSIC')} onClose=${() => setSpellSlot(0)} />`}
+      ${skinsOpen && me.championId > 0 && html`<${SkinSheet} me=${me} onClose=${() => setSkinsOpen(false)} />`}
       ${swapCell != null && html`<${SwapSheet} d=${d} cell=${swapCell} onClose=${() => setSwapCell(null)} />`}
       <${SwapBanner} d=${d} />
     </main>`;
@@ -919,15 +944,18 @@ function meStatus(d, banning, selected) {
   return selected ? 'Declared to your team' : 'Hover one to show your team';
 }
 
-function MeCard({ d, selected, banning, onSpell }) {
+function MeCard({ d, selected, banning, onSpell, onSkins }) {
   const { me, sess } = d;
   const title = useTitle(selected);
+  // Skins open up once your champion is locked in (or handed to you in ARAM).
+  const canSkin = !sess.spectating && me.championId > 0 && (d.pickDone || d.aram);
   return html`
     <section class=${cx('mecard', d.pickDone && 'locked')}>
       <div class="me-text">
         <p class=${cx('me-status', d.pickDone && 'done')}>${d.pickDone && html`<i class="dot gold" />`}${meStatus(d, banning, selected)}</p>
         <h2 class=${cx('me-name', !(selected > 0) && 'empty')} key=${selected}>${selected > 0 ? champName(selected) : banning ? 'No ban yet' : 'No champion yet'}</h2>
         ${selected > 0 && title && html`<p class="me-title">${title}</p>`}
+        ${canSkin && html`<button class="skin-chip" onClick=${onSkins}>${Icon.brush}<span>Skins</span>${Icon.arrow}</button>`}
       </div>
       ${!sess.spectating && html`
         <div class="spells">
@@ -957,7 +985,7 @@ function Teams({ d, onAlly }) {
     return html`
       <li class=${cx('slot ally', mine && 'me', activeCells.has(m.cellId) && 'active', intent && 'intent', m.championId && 'filled')} key=${m.cellId}>
         <button class="slot-face" disabled=${!any} onClick=${() => onAlly(m)} aria-label=${any ? `Swap with ${POSITIONS[m.assignedPosition] || m.name || 'teammate'}` : undefined}>
-          ${id > 0 ? html`<img src=${art(id, 'tile')} alt=${champName(id)} key=${id} />` : html`<span class="slot-pos">${(POSITIONS[m.assignedPosition] || '').slice(0, 3)}</span>`}
+          ${id > 0 ? html`<img src=${art(id, 'tile', m.championId === id ? m.skinId : 0)} alt=${champName(id)} key=${`${id}:${m.championId === id ? m.skinId : 0}`} />` : html`<span class="slot-pos">${(POSITIONS[m.assignedPosition] || '').slice(0, 3)}</span>`}
           ${any && html`<i class=${cx('swap-badge', sent && 'sent')} aria-hidden="true">${Icon.swap}</i>`}
         </button>
         <span class="slot-label">${mine ? 'You' : POSITIONS[m.assignedPosition] || m.name || ''}</span>
@@ -1073,6 +1101,52 @@ function Bench({ bench }) {
     </section>`;
 }
 
+// Your skins for this champion, from the client's skin carousel. Chromas sit under the skin.
+function SkinSheet({ me, onClose }) {
+  const [skins, setSkins] = useState(null);
+  const [pending, setPending] = useState(0);
+  const strip = useRef(null);
+  useEffect(() => { let live = true; send('skins').then((r) => live && setSkins(r.ok ? r.data : [])); return () => { live = false; }; }, [me.championId]);
+  const current = pending || me.skinId || me.championId * 1000;
+  useEffect(() => { if (pending && me.skinId === pending) setPending(0); }, [me.skinId]);
+  const parent = skins?.find((k) => k.id === current || k.chromas.some((c) => c.id === current));
+  // Centre the skin you're wearing when the sheet opens.
+  useEffect(() => { strip.current?.querySelector('.skin-card.on')?.scrollIntoView({ inline: 'center', block: 'nearest' }); }, [!!skins]);
+  const choose = async (id) => {
+    if (id === current) return;
+    navigator.vibrate?.(8);
+    setPending(id);
+    const r = await send('skin', { skinId: id });
+    if (!r.ok) setPending(0);
+  };
+  const list = skins ? [...skins].sort((a, b) => b.owned - a.owned) : [];
+  const owned = list.filter((k) => k.owned).length;
+  return html`
+    <${Sheet} title="Skins" onClose=${onClose}>
+      ${!skins ? html`<p class="sheet-note">Loading your skins…</p>` : !list.length ? html`<p class="sheet-note">No skins to choose from.</p>` : html`
+        <p class="sheet-note tight">${owned} of ${list.length} owned. Tap one to wear it.</p>
+        <ul class="skin-strip" ref=${strip}>
+          ${list.map((k) => html`
+            <li key=${k.id}>
+              <button class=${cx('skin-card', parent?.id === k.id && 'on', !k.owned && 'locked')} disabled=${!k.owned} onClick=${() => choose(k.id)} aria-pressed=${parent?.id === k.id}>
+                <img src=${art(me.championId, 'load', k.id)} alt="" loading="lazy" decoding="async" />
+                <span class="skin-name">${k.base ? 'Default' : k.name}</span>
+                ${!k.owned && html`<i class="skin-lock" aria-label="Not owned">${Icon.lock}</i>`}
+              </button>
+            </li>`)}
+        </ul>
+        ${parent?.chromas.length > 0 && html`
+          <p class="eyebrow chromas-label">Chromas</p>
+          <div class="chromas" role="radiogroup" aria-label="Chromas">
+            <button class=${cx('chroma base', current === parent.id && 'on')} role="radio" aria-checked=${current === parent.id} aria-label="No chroma" onClick=${() => choose(parent.id)} />
+            ${parent.chromas.map((c) => html`
+              <button key=${c.id} class=${cx('chroma', current === c.id && 'on', !c.owned && 'locked')} role="radio" aria-checked=${current === c.id} disabled=${!c.owned}
+                style=${{ '--c': c.color || '#888' }} aria-label=${c.name} onClick=${() => choose(c.id)} />`)}
+          </div>`}
+      `}
+    </${Sheet}>`;
+}
+
 function SpellSheet({ slot, me, mode, onClose }) {
   const spells = (store.data?.spellList || []).filter((sp) => sp.modes.includes(mode));
   const current = slot === 1 ? me.spell1Id : me.spell2Id;
@@ -1145,6 +1219,9 @@ const keystoneRow = (st) => (st?.slots || []).find((sl) => sl.type === 'kKeySton
 const regularRows = (st) => (st?.slots || []).filter((sl) => sl.type !== 'kKeyStone' && sl.type !== 'kStatMod');
 const shardRows = (st) => (st?.slots || []).filter((sl) => sl.type === 'kStatMod');
 const activePage = (s) => s?.runes?.pages.find((p) => p.id === s.runes.current) || null;
+// Each tree's colour in the client: Precision, Domination, Sorcery, Inspiration, Resolve.
+const TREE_COLOR = { 8000: '#c8aa6e', 8100: '#d44242', 8200: '#9faafc', 8300: '#49aab9', 8400: '#a1d586' };
+const treeStyle = (id) => ({ '--tree': TREE_COLOR[id] || '#c8aa6e' });
 
 function RuneButton() {
   const ks = perkOf(activePage(store.state)?.selectedPerkIds[0]);
@@ -1195,7 +1272,7 @@ function RunesScreen({ s, onClose }) {
 function PerkBtn({ id, on, dim, size = '', onPick }) {
   const p = perkOf(id);
   return html`
-    <button class=${cx('perk', size, on && 'on', dim && 'dim')} onClick=${onPick} aria-pressed=${!!on} aria-label=${p?.name || 'Rune'}>
+    <button class=${cx('perk', size, on && 'on', dim && 'dim', !on && !dim && 'idle')} onClick=${onPick} aria-pressed=${!!on} aria-label=${p?.name || 'Rune'}>
       ${p && html`<img src=${asset(p.icon)} alt="" loading="lazy" />`}
     </button>`;
 }
@@ -1267,12 +1344,12 @@ function RuneEditor({ page, onClose }) {
       <input class="page-name-input" value=${v.name} maxlength="50" aria-label="Page name"
         onInput=${(e) => patch({ name: e.target.value })} autocomplete="off" spellcheck="false" enterkeyhint="done" />
 
-      <section class="tree">
+      <section class="tree" style=${treeStyle(v.primary)}>
         <p class="eyebrow">Primary</p>
         <div class="tree-tabs" role="radiogroup" aria-label="Primary tree">
-          ${styles.map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.primary} class=${cx('tree-tab', st.id === v.primary && 'on')} onClick=${() => pickPrimary(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
+          ${styles.map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.primary} class=${cx('tree-tab', st.id === v.primary && 'on')} style=${treeStyle(st.id)} onClick=${() => pickPrimary(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
         </div>
-        <p class="tree-name">${P?.name}</p>
+        <p class="tree-name">${P && html`<img src=${asset(P.icon)} alt="" />`}${P?.name}</p>
         <div class="perk-row keystones">
           ${keystoneRow(P).perks.map((id) => html`<${PerkBtn} key=${id} id=${id} size="big" on=${v.keystone === id} dim=${v.keystone && v.keystone !== id} onPick=${tap(id, () => patch({ keystone: id }))} />`)}
         </div>
@@ -1282,12 +1359,12 @@ function RuneEditor({ page, onClose }) {
           </div>`)}
       </section>
 
-      <section class="tree">
+      <section class="tree" style=${treeStyle(v.sub)}>
         <p class="eyebrow">Secondary <span class="count">${v.subSel.length}/2</span></p>
         <div class="tree-tabs" role="radiogroup" aria-label="Secondary tree">
-          ${(P?.subs || []).map(styleOf).filter(Boolean).map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.sub} class=${cx('tree-tab', st.id === v.sub && 'on')} onClick=${() => pickSub(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
+          ${[...(P?.subs || [])].sort((a, b) => TREE_ORDER.indexOf(a) - TREE_ORDER.indexOf(b)).map(styleOf).filter(Boolean).map((st) => html`<button key=${st.id} role="radio" aria-checked=${st.id === v.sub} class=${cx('tree-tab', st.id === v.sub && 'on')} style=${treeStyle(st.id)} onClick=${() => pickSub(st.id)} aria-label=${st.name}><img src=${asset(st.icon)} alt="" /></button>`)}
         </div>
-        <p class="tree-name">${Sb?.name}</p>
+        <p class="tree-name">${Sb && html`<img src=${asset(Sb.icon)} alt="" />`}${Sb?.name}</p>
         ${regularRows(Sb).map((row, ri) => {
           const chosen = v.subSel.find((x) => x.row === ri);
           return html`
@@ -1297,7 +1374,7 @@ function RuneEditor({ page, onClose }) {
         })}
       </section>
 
-      <section class="tree">
+      <section class="tree shards-tree">
         <p class="eyebrow">Shards</p>
         ${shardRows(P).map((row, ri) => html`
           <div class="perk-row shards" key=${'x' + ri}>

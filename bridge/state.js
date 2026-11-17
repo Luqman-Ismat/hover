@@ -211,7 +211,7 @@ export class ClientState extends EventEmitter {
     const age = Date.now() - s.sessionAt;
     const member = (m) => ({
       cellId: m.cellId, championId: m.championId, championPickIntent: m.championPickIntent,
-      assignedPosition: m.assignedPosition, spell1Id: m.spell1Id, spell2Id: m.spell2Id,
+      assignedPosition: m.assignedPosition, spell1Id: m.spell1Id, spell2Id: m.spell2Id, skinId: m.selectedSkinId || 0,
       name: m.gameName || m.summonerName || '',
     });
     return {
@@ -497,6 +497,22 @@ export class ClientState extends EventEmitter {
         const entry = (this.s.session?.[kind[0]] || []).find((x) => x.id === id);
         if (!entry) throw new Error('That swap isn’t available any more');
         return this.#call('POST', `/lol-champ-select/v1/session/${kind[1]}/${id}/${msg.action}`);
+      }
+      // Your champion's skins (and chromas) from the client's skin carousel.
+      case 'skins': {
+        const list = await this.lcu.get('/lol-champ-select/v1/skin-carousel-skins');
+        if (!Array.isArray(list)) throw new Error('Couldn’t load your skins');
+        return list.filter((k) => int(k.id)).map((k) => ({
+          id: k.id, name: k.name || '', owned: !!k.unlocked && !k.disabled, base: !!k.isBase,
+          chromas: (k.childSkins || []).filter((c) => int(c.id)).map((c) => ({
+            id: c.id, name: c.name || '', owned: !!c.unlocked && !c.disabled, color: c.colors?.[0] || null,
+          })),
+        }));
+      }
+      case 'skin': {
+        const selectedSkinId = int(msg.skinId);
+        if (!selectedSkinId) throw new Error('Pick a skin');
+        return this.#call('PATCH', '/lol-champ-select/v1/session/my-selection', { selectedSkinId });
       }
       case 'reroll': return this.#call('POST', '/lol-champ-select/v1/session/my-selection/reroll');
       case 'bench': {

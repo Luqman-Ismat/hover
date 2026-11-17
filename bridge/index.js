@@ -113,7 +113,7 @@ async function notifyCommand(msg) {
   }
 }
 const PHONE_COMMANDS = new Set(['notifyInfo', 'notifySet', 'notifyTest']);
-const RETURNS_DATA = new Set(['friends', ...PHONE_COMMANDS]);
+const RETURNS_DATA = new Set(['friends', 'skins', ...PHONE_COMMANDS]);
 
 let lcuWasUp = null;
 client.on('state', (s) => {
@@ -156,11 +156,18 @@ async function getChampInfo(id) {
   const d = await client.lcu.get(`/lol-game-data/assets/v1/champions/${id}.json`).catch(() => null);
   const base = d?.skins?.find((s) => s.isBase) || d?.skins?.[0];
   if (!base) return null;
-  const info = { id, title: d.title || '', splash: base.splashPath, wide: base.uncenteredSplashPath, tile: base.tilePath };
+  const pick = (k) => ({ splash: k.splashPath, wide: k.uncenteredSplashPath, tile: k.tilePath, load: k.loadScreenPath });
+  // Every skin by id; a chroma uses its skin's art (chromas only recolour the model).
+  const skins = new Map();
+  for (const k of d.skins) {
+    skins.set(k.id, pick(k));
+    for (const c of k.chromas || []) skins.set(c.id, pick(k));
+  }
+  const info = { id, title: d.title || '', ...pick(base), skins };
   champInfo.set(id, info);
   return info;
 }
-const ART = { splash: 'splash', wide: 'wide', tile: 'tile' };
+const ART = { splash: 'splash', wide: 'wide', tile: 'tile', load: 'load' };
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'Cache-Control': 'no-store', ...headers });
@@ -213,14 +220,15 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, hit.body, { 'Content-Type': hit.type, 'Cache-Control': 'private, max-age=86400' });
     }
 
-    // /art?id=103&k=splash|wide|tile : champion splash art, resolved by the bridge.
+    // /art?id=103&k=splash|wide|tile|load[&skin=103005] : champion art, resolved by the bridge.
     if (p === '/art') {
       if (!authed(req)) return send(res, 401, '');
       const id = Number(url.searchParams.get('id'));
       const key = ART[url.searchParams.get('k')] || 'splash';
       if (!Number.isInteger(id) || id <= 0 || id >= 10000) return send(res, 400, '');
       const info = await getChampInfo(id);
-      const ap = info?.[key];
+      const skin = Number(url.searchParams.get('skin'));
+      const ap = (info?.skins.get(skin) || info)?.[key];
       if (!ap?.startsWith('/lol-game-data/assets/') || ap.includes('..')) return send(res, 404, '');
       const hit = await getAsset(ap);
       if (!hit) return send(res, 404, '');
@@ -340,7 +348,7 @@ function connectPage() {
   .foot { margin-top: auto; padding-top: 18px; font-size: 12px; color: #5b5a56; max-width: 34ch; }
 </style></head>
 <body>
-  <h1><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><circle cx="16" cy="16" r="10.5" fill="none" stroke="#c8aa6e" stroke-opacity=".3" stroke-width="2.6"/><path d="M16 5.5A10.5 10.5 0 1 1 6.2 19.8" fill="none" stroke="#c8aa6e" stroke-width="2.6" stroke-linecap="round"/><circle cx="16" cy="16" r="3" fill="#c8aa6e"/></svg>HOVER</h1>
+  <h1><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><path d="M16 3.5 26.8 9.75v12.5L16 28.5 5.2 22.25V9.75Z" fill="none" stroke="#c8aa6e" stroke-width="2.4" stroke-linejoin="round"/><path d="M16 10.2l3.4 5.8-3.4 5.8-3.4-5.8Z" fill="#0ac8b9"/></svg>HOVER</h1>
   <div class="status ${st.lcu ? 'on' : ''}" id="status"><i class="dot"></i><span>${st.lcu ? 'League connected' : 'Waiting for League'}</span></div>
   <div class="qr" id="qr">${qrSvg(st.pairUrl)}</div>
   <p class="lead">Scan with your iPhone camera</p>

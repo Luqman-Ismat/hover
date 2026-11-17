@@ -50,6 +50,7 @@ function showWindow() {
     win = new BrowserWindow({
       width: 380, height: 660, resizable: false, maximizable: false, fullscreenable: false,
       title: 'Hover', backgroundColor: '#010a13', show: false, autoHideMenuBar: true,
+      ...(MAC ? {} : { icon: path.join(here, 'assets', 'icon.png') }), // Windows taskbar
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     win.loadURL(`${BASE}/connect`);
@@ -82,8 +83,8 @@ function toTray() {
       type: 'info', title: 'Hover', buttons: ['Got it'],
       message: `Hover is still running in the ${WHERE}`,
       detail: MAC
-        ? 'Look for the ring icon at the top right of your screen. Click it to show the QR code again or to quit Hover.'
-        : 'Look for the ring icon at the bottom right of your screen. If you don’t see it, click the ^ arrow next to the clock. Click it to show the QR code again; right-click it to quit Hover.',
+        ? 'Look for the Hover icon (a small hexagon) at the top right of your screen. Click it to show the QR code again or to quit Hover.'
+        : 'Look for the Hover icon (a small gold hexagon) at the bottom right of your screen. If you don’t see it, click the ^ arrow next to the clock. Click it to show the QR code again; right-click it to quit Hover.',
     });
   } else if (!MAC && tray) {
     tray.displayBalloon({ title: 'Hover is still running', content: 'It’s in the system tray. Right-click the icon to quit.', iconType: 'info' });

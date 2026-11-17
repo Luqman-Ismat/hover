@@ -430,7 +430,22 @@ function sessionView() {
   if (!S.session) return null;
   // Real client: timer counts down from the moment it was set.
   const t = S.session.timer;
-  return { ...S.session, ...swapLists(), timer: t && { ...t, adjustedTimeLeftInPhase: Math.max(0, S.phaseEnds - Date.now()), internalNowInEpochMs: Date.now() } };
+  // Like the client, a new champion starts on its base skin (skin id = champion id × 1000).
+  const skin = (m) => ({ ...m, selectedSkinId: m.championId > 0 ? (Math.floor((m.selectedSkinId || 0) / 1000) === m.championId ? m.selectedSkinId : m.championId * 1000) : 0 });
+  return { ...S.session, ...swapLists(), myTeam: S.session.myTeam.map(skin), theirTeam: S.session.theirTeam.map(skin), timer: t && { ...t, adjustedTimeLeftInPhase: Math.max(0, S.phaseEnds - Date.now()), internalNowInEpochMs: Date.now() } };
+}
+
+// Skins for your champion, shaped like the client's carousel: you own the base skin and
+// every other one, chromas included.
+async function skinCarousel(championId) {
+  const a = championId > 0 && await fetchAsset(`/lol-game-data/assets/v1/champions/${championId}.json`).catch(() => null);
+  if (!a) return [];
+  const d = JSON.parse(a.body.toString('utf8'));
+  return (d.skins || []).map((k, i) => ({
+    id: k.id, championId, name: k.name, unlocked: i % 2 === 0, disabled: false, isBase: !!k.isBase,
+    splashPath: k.splashPath, tilePath: k.tilePath, loadScreenPath: k.loadScreenPath,
+    childSkins: (k.chromas || []).map((c, j) => ({ id: c.id, name: c.name, unlocked: j % 2 === 0, colors: c.colors || [], parentSkinId: k.id })),
+  }));
 }
 
 const server = http.createServer(async (req, res) => {
@@ -460,6 +475,7 @@ const server = http.createServer(async (req, res) => {
     const id = Number(p.split('/').pop());
     return reply(res, 200, { id, name: QUEUE_NAMES[id] || 'Custom', description: QUEUE_NAMES[id] || 'Custom' });
   }
+  if (m === 'GET' && p === '/lol-champ-select/v1/skin-carousel-skins') return reply(res, 200, me ? await skinCarousel(me.championId) : []);
   if (m === 'GET' && (p === '/lol-champ-select/v1/pickable-champion-ids' || p === '/lol-champ-select/v1/bannable-champion-ids')) {
     if (!S.session) return err(res, 404, 'No active delegate');
     const lockedPicks = new Set(S.session.actions.flat().filter((a) => a.type === 'pick' && a.completed).map((a) => a.championId));
@@ -622,7 +638,12 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (m === 'PATCH' && p === '/lol-champ-select/v1/session/my-selection' && me) {
-    const { spell1Id, spell2Id } = await body(req);
+    const { spell1Id, spell2Id, selectedSkinId } = await body(req);
+    if (selectedSkinId) {
+      const owned = (await skinCarousel(me.championId)).flatMap((k) => [k, ...k.childSkins]).find((k) => k.id === selectedSkinId && k.unlocked);
+      if (!owned) return err(res, 400, 'Skin not owned');
+      me.selectedSkinId = selectedSkinId;
+    }
     if (spell1Id) me.spell1Id = spell1Id;
     if (spell2Id) me.spell2Id = spell2Id;
     touchSession();
