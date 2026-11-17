@@ -2,3 +2,5 @@ node_modules
 mock/.lockfile
 .env
 dist/
+.DS_Store
+.claude/

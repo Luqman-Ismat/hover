@@ -23,7 +23,7 @@ const common = {
   dir: root, out: dist, name: 'Hover', executableName: 'Hover', appVersion: pkg.version,
   overwrite: true, asar: true, prune: true, quiet: true,
   // Only the bridge, the phone app and the desktop shell ship.
-  ignore: [/^\/(mock|scripts|dist|\.claude|\.git|\.env.*|\.gitignore|README\.md)(\/|$)/],
+  ignore: [/^\/(mock|scripts|dist|\.claude|\.git|\.env.*|\.gitignore|README\.md|docs)(\/|$)/],
 };
 
 step('Building Hover for Mac (Apple Silicon + Intel)');
@@ -41,11 +41,13 @@ const [winOut] = await packager({ ...common, platform: 'win32', arch: 'x64' });
 
 step('Packaging');
 const readme = (mac) => [
-  'Hover: champ select from your iPhone',
+  'Hover: champ select from your phone',
+  'Full guide and help: https://github.com/Luqman-Ismat/hover',
   '',
   mac ? '1. Drag Hover into Applications, then open it.' : '1. Open the Hover folder and double-click Hover.exe.',
   mac
-    ? '   First time only: if macOS says it can\'t check the app, right-click Hover > Open > Open.'
+    ? '   First time only: if macOS says it couldn\'t verify Hover, click Done, then go to\n'
+      + '   System Settings > Privacy & Security, scroll down and click Open Anyway.'
     : '   First time only: if Windows SmartScreen appears, click More info > Run anyway.',
   mac
     ? '   Allow incoming connections if asked, so your iPhone can reach it.'
